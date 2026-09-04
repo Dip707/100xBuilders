@@ -36,6 +36,12 @@ describe("renderReport", () => {
     expect(md).toContain("R1 login");
   });
 
+  it("labels a partial run with the actual reason it stopped", () => {
+    const s = sample();
+    const md = renderReport({ ...s, partial: true, partialReason: "plan failed: boom" });
+    expect(md).toContain("(partial: plan failed: boom)");
+  });
+
   it("escapes untrusted text so it cannot corrupt tables or inject HTML", () => {
     const s = sample();
     s.plan[1] = { ...s.plan[1], title: "Login | Logout <b>x</b>\nnext" };

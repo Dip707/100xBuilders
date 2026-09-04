@@ -29,7 +29,7 @@ export function renderReport(state: RunState): string {
   const passed = tests.filter((t) => t.status === "passed").length;
   const cls = new Map(state.classifications.map((c) => [c.test, c]));
   const md: string[] = [];
-  md.push(`# qa-pilot report for ${text(state.url)}`, "", `Run ${text(state.runId)}${state.partial ? " (partial: budget exceeded)" : ""}.`, "");
+  md.push(`# qa-pilot report for ${text(state.url)}`, "", `Run ${text(state.runId)}${state.partial ? ` (partial: ${text(state.partialReason ?? "unknown reason")})` : ""}.`, "");
   md.push("## Summary", "", row(["Flows planned", "Tests generated", "Passed", "Failed", "Heals", "Defects", "Coverage", "LLM calls"]), row(["---", "---", "---", "---", "---", "---", "---", "---"]),
     row([state.plan.length, tests.length, passed, tests.length - passed, state.healLog.filter((h) => h.accepted).length, state.defects.length, state.coverage?.score ?? "n/a", state.llmCalls]), "");
   md.push("## Flows by category", "");

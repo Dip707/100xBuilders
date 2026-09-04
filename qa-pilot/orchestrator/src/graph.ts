@@ -21,14 +21,15 @@ export function buildGraph(deps: NodeDeps, opts: { checkpointPath?: string } = {
     const why = budgetExceeded(state);
     if (why) {
       deps.bus.decision({ node: name, reason: `budget exceeded (${why}); finishing with partial results`, evidence: [why], next: "report", at: now() });
-      return { partial: true };
+      return { partial: true, partialReason: `budget exceeded: ${why}` };
     }
     try {
       return await fn(state, deps);
     } catch (err) {
+      const firstLine = (err as Error).message.split("\n")[0];
       deps.bus.emit({ type: "error", node: name, message: (err as Error).message });
-      deps.bus.decision({ node: name, reason: `node failed: ${(err as Error).message.split("\n")[0]}; finishing with partial results`, evidence: [], next: "report", at: now() });
-      return { partial: true };
+      deps.bus.decision({ node: name, reason: `node failed: ${firstLine}; finishing with partial results`, evidence: [], next: "report", at: now() });
+      return { partial: true, partialReason: `${name} failed: ${firstLine}` };
     }
   };
   const orReport = <T extends string>(next: T) => (state: RunState): T | "report" => (state.partial ? "report" : next);

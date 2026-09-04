@@ -198,6 +198,7 @@ export const RunStateAnnotation = Annotation.Root({
   decisions: Annotation<Decision[]>(append<Decision>()),
   llmCalls: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
   partial: Annotation<boolean>({ reducer: (_a, b) => b, default: () => false }),
+  partialReason: Annotation<string | undefined>(),
 });
 export type RunState = typeof RunStateAnnotation.State;
 export type RunUpdate = typeof RunStateAnnotation.Update;
@@ -230,6 +231,7 @@ export function initialState(input: { runId: string; url: string } & Partial<Run
     decisions: [],
     llmCalls: 0,
     partial: false,
+    partialReason: undefined,
   };
 }
 

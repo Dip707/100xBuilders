@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
 import { startRun } from "../src/run.js";
+import { buildGraph } from "../src/graph.js";
+import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
-import type { Flow } from "../src/state.js";
+import { initialState, outputDir, type Flow } from "../src/state.js";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
@@ -52,4 +54,23 @@ describe("full graph against mini-shop with the fake LLM", () => {
     const decisions = readFileSync(dir + "decisions.jsonl", "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(decisions.map((d) => d.node)).toEqual(expect.arrayContaining(["explore", "evaluate_coverage", "classify"]));
   }, 300_000);
+});
+
+describe("graph budget guard (fast, no browser)", () => {
+  it("marks the run partial with a budget-exceeded reason before any node launches a browser", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-graph-budget-")) + "/";
+    const runId = "budget-1";
+    const bus = new EventBus(runId, outputDir(runId));
+    const llm = new FakeLlmClient({});
+    const graph = buildGraph({ bus, llm, headless: true }, { checkpointPath: outputDir(runId) + "checkpoint.db" });
+    const state = {
+      ...initialState({ runId, url: "http://example.test" }),
+      budget: { maxLlmCalls: 0, maxMinutes: 40 },
+      llmCalls: 1,
+    };
+    const final = await graph.invoke(state, { configurable: { thread_id: runId }, recursionLimit: 100 });
+    expect(final.partial).toBe(true);
+    expect(final.partialReason).toMatch(/budget exceeded/);
+    expect(existsSync(outputDir(runId) + "report.md")).toBe(true);
+  });
 });

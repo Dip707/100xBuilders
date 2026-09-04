@@ -48,7 +48,13 @@ const { done } = startRun(
   },
   { headless: values.headless || process.env.QA_PILOT_HEADLESS === "1" },
 );
-const final = await done;
+let final;
+try {
+  final = await done;
+} catch (err) {
+  console.error(`[error] run failed: ${(err as Error).message}`);
+  process.exit(1);
+}
 const passed = final.results?.tests.filter((t) => t.status === "passed").length ?? 0;
 console.log(`\ndone. ${passed}/${final.results?.tests.length ?? 0} passed, ${final.defects.length} defects, ${final.healLog.filter((h) => h.accepted).length} heals.`);
 console.log(`report: ${outputDir(runId)}report.html`);
