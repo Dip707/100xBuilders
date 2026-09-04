@@ -376,3 +376,8 @@ Cut order if behind: parallelism → PRD gap matrix → UI polish. Never cut M3.
 | LLM hallucinates elements | Generator validates every locator live before writing |
 | Healer hides bugs | Hard rule 8.6.5 + heal log in report |
 | Budget blowout | `budget` in state; report partial results |
+
+## qa-pilot
+
+Autonomous test orchestration agent for the Bessemer Tech Catalyst hackathon.
+See [qa-pilot/README.md](qa-pilot/README.md).

@@ -1,0 +1,9 @@
+{
+  "name": "@qa-pilot/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": { "@playwright/test": "^1.62.1" },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.6.0" }
+}
