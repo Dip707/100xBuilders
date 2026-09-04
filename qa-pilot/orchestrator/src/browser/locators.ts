@@ -4,7 +4,8 @@ export type Strategy = "role" | "label" | "text" | "testid" | "css";
 export type ResolvedLocator = { locator: Locator; code: string; strategy: Strategy };
 export type LocatorTarget = { role?: string; name?: string; css?: string };
 
-const q = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+export const quote = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+const q = quote;
 
 async function count(locator: Locator): Promise<number> {
   try {
@@ -15,11 +16,11 @@ async function count(locator: Locator): Promise<number> {
 }
 
 /**
- * Resolution chain: getByRole (exact name, then loose name match) -> getByLabel -> getByText ->
+ * Resolution chain: getByRole (loose name match, then exact name match) -> getByLabel -> getByText ->
  * getByTestId -> CSS. Each candidate is only accepted when it resolves to exactly one element
- * (or, for role-only / css targets, at least one - the first is then used). The emitted `code`
- * always uses the plain (non-exact) getByRole form, since that is what generated test files
- * should read even when the exact-name lookup is what proved uniqueness.
+ * (or, for role-only / css targets, at least one - the first is then used). The loose lookup is
+ * tried first since it is what generated test files should prefer to read; the exact lookup is
+ * only used (with `exact: true` emitted in the code) when the loose lookup is itself ambiguous.
  */
 export async function resolveLocator(page: Page, t: LocatorTarget): Promise<ResolvedLocator | null> {
   const candidates: (() => Promise<ResolvedLocator | null>)[] = [];
@@ -27,12 +28,15 @@ export async function resolveLocator(page: Page, t: LocatorTarget): Promise<Reso
   if (t.role && t.name) {
     const role = t.role as Parameters<Page["getByRole"]>[0];
     const name = t.name;
-    const code = `page.getByRole(${q(t.role)}, { name: ${q(name)} })`;
     candidates.push(async () => {
-      const exact = page.getByRole(role, { name, exact: true });
-      if ((await count(exact)) === 1) return { locator: exact, code, strategy: "role" };
       const loose = page.getByRole(role, { name });
-      if ((await count(loose)) === 1) return { locator: loose, code, strategy: "role" };
+      if ((await count(loose)) === 1) {
+        return { locator: loose, code: `page.getByRole(${q(t.role!)}, { name: ${q(name)} })`, strategy: "role" };
+      }
+      const exact = page.getByRole(role, { name, exact: true });
+      if ((await count(exact)) === 1) {
+        return { locator: exact, code: `page.getByRole(${q(t.role!)}, { name: ${q(name)}, exact: true })`, strategy: "role" };
+      }
       return null;
     });
   } else if (t.role) {

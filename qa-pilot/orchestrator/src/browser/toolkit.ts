@@ -2,9 +2,8 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { mkdirSync } from "node:fs";
 import type { Step, Expectation } from "../state.js";
 import type { EventBus } from "../events.js";
-import { resolveLocator, type ResolvedLocator } from "./locators.js";
+import { resolveLocator, quote as q, type ResolvedLocator } from "./locators.js";
 
-const q = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 const re = (s: string) => `/${s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}/`;
 
 export function expectationCode(exp: Expectation): string {
@@ -62,6 +61,12 @@ export class BrowserToolkit {
     return this.context.newPage();
   }
 
+  async newContext(): Promise<BrowserContext> {
+    const ctx = await this.browser.newContext({ viewport: { width: 1200, height: 800 } });
+    ctx.setDefaultTimeout(5000);
+    return ctx;
+  }
+
   async snapshot(page: Page): Promise<string> {
     return page.locator("body").ariaSnapshot();
   }
@@ -84,7 +89,7 @@ export class BrowserToolkit {
       const url = step.target?.startsWith("http") ? step.target : this.baseUrl + (step.target ?? "/");
       await page.goto(url, { waitUntil: "domcontentloaded" });
       await this.screenshot(page, `goto ${step.target ?? ""}`);
-      return { locator: page.locator("body"), code: `page.goto(${q(step.target ?? "/")})`, strategy: "css" };
+      return { locator: page.locator("body"), code: "", strategy: "css" };
     }
     const r = await resolveLocator(page, { role: step.role, name: step.name });
     if (!r) {
@@ -155,7 +160,9 @@ export class BrowserToolkit {
         }
       }
     } catch (e) {
-      return { ok: false, actual: (e as Error).message.split("\n")[0], code };
+      const message = (e as Error).message.split("\n")[0];
+      this.bus?.log(this.agent, `expectation check failed: ${message}`);
+      return { ok: false, actual: message, code };
     }
   }
 

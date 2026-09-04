@@ -36,12 +36,21 @@ describe("resolveLocator", () => {
     expect(await resolveLocator(page, { role: "button", name: "Launch rocket" })).toBeNull();
     await page.close();
   });
+  it("falls back to exact match with exact:true when the loose match is ambiguous", async () => {
+    const page = await kit.newPage();
+    await page.setContent("<button>Save</button><button>Save draft</button>");
+    const r = await resolveLocator(page, { role: "button", name: "Save" });
+    expect(r?.strategy).toBe("role");
+    expect(r?.code).toBe("page.getByRole('button', { name: 'Save', exact: true })");
+    await page.close();
+  });
 });
 
 describe("BrowserToolkit.act and checkExpectation", () => {
   it("runs the wrong-password flow live", async () => {
     const page = await kit.newPage();
-    await kit.act(page, { action: "goto", target: "/login" });
+    const goto = await kit.act(page, { action: "goto", target: "/login" });
+    expect(goto?.code).toBe("");
     await kit.act(page, { action: "fill", role: "textbox", name: "Email", value: "demo@shop.test" });
     await kit.act(page, { action: "fill", role: "textbox", name: "Password", value: "wrong" });
     const start = page.url();
@@ -57,6 +66,16 @@ describe("BrowserToolkit.act and checkExpectation", () => {
     await kit.act(page, { action: "goto", target: "/login" });
     expect(await kit.act(page, { action: "click", role: "button", name: "Nope" })).toBeNull();
     await page.close();
+  });
+});
+
+describe("BrowserToolkit.newContext", () => {
+  it("gives a fresh, unauthenticated context", async () => {
+    const ctx = await kit.newContext();
+    const page = await ctx.newPage();
+    await page.goto(shop.base + "/orders");
+    expect(page.url()).toContain("/login");
+    await ctx.close();
   });
 });
 
