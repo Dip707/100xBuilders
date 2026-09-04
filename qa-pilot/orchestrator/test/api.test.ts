@@ -37,4 +37,20 @@ describe("api", () => {
     expect(await report.text()).toContain("<h1>ok</h1>");
     expect((await app.request("/report/missing")).status).toBe(404);
   });
+
+  it("serves run files and blocks path traversal", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api3-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "api-r2/screenshots", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "api-r2/screenshots/step1.png", "fake-png-bytes");
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "secret.txt", "top secret");
+    const app = createApi({ start: () => ({ runId: "x" }) });
+
+    const file = await app.request("/runs/api-r2/files/screenshots/step1.png");
+    expect(file.status).toBe(200);
+    expect(file.headers.get("content-type")).toBe("image/png");
+    expect(await file.text()).toBe("fake-png-bytes");
+
+    expect((await app.request("/runs/api-r2/files/nope.png")).status).toBe(404);
+    expect((await app.request("/runs/api-r2/files/..%2Fsecret.txt")).status).toBe(404);
+  });
 });
