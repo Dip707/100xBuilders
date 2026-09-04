@@ -24,7 +24,17 @@ export async function hashPassword(plain: string): Promise<string> {
 export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
   const parsed = parse(stored);
   if (!parsed) return false;
-  const candidate = await scryptAsync(plain, parsed.salt, parsed.key.length, parsed.params);
+  // parse() only checks the parameter string is shaped like digits; it cannot validate that
+  // N is a power of two or that N/r/p stay under Node's scrypt maxmem. A stored hash that
+  // fails those runtime constraints must still make verifyPassword resolve to false rather
+  // than reject, so a corrupted or maliciously-crafted stored hash can never be turned into
+  // an unhandled rejection by a caller that only awaits a boolean.
+  let candidate: Buffer;
+  try {
+    candidate = await scryptAsync(plain, parsed.salt, parsed.key.length, parsed.params);
+  } catch {
+    return false;
+  }
   // Lengths are equal by construction here, but timingSafeEqual throws on a mismatch,
   // so guard rather than let a malformed stored hash become an exception.
   if (candidate.length !== parsed.key.length) return false;

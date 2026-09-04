@@ -19,13 +19,17 @@ export function hashToken(token: string): string {
 }
 
 /**
- * `secure` is decided from the request host rather than NODE_ENV: the dev setup is plain
- * http on localhost, where a Secure cookie would simply never be stored, and any other
- * host is assumed to be served over https.
+ * `secure` is decided from the request's URL scheme, not its Host header: a Host header is
+ * client-supplied and trivially spoofable (`Host: localhost` on a real deployment would have
+ * downgraded the cookie under a hostname check), while the scheme the request actually arrived
+ * over is not. Behaviour on `http://localhost` is unchanged by this: a `Secure` cookie is never
+ * stored over plain http regardless of hostname, so it still comes out insecure there. It is
+ * strictly better for a plain-http LAN demo such as `http://192.168.1.5:4000`, where a hostname
+ * check would set `Secure` and silently break login since the browser would refuse to store the
+ * cookie at all.
  */
-function isLocalhost(c: Context): boolean {
-  const host = new URL(c.req.url).hostname;
-  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+function isHttps(c: Context): boolean {
+  return new URL(c.req.url).protocol === "https:";
 }
 
 export function setSessionCookie(c: Context, token: string): void {
@@ -34,12 +38,12 @@ export function setSessionCookie(c: Context, token: string): void {
     sameSite: "Lax",
     path: "/",
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
-    secure: !isLocalhost(c),
+    secure: isHttps(c),
   });
 }
 
 export function clearSessionCookie(c: Context): void {
-  deleteCookie(c, SESSION_COOKIE, { path: "/", secure: !isLocalhost(c) });
+  deleteCookie(c, SESSION_COOKIE, { path: "/", secure: isHttps(c) });
 }
 
 export function readSessionCookie(c: Context): string | undefined {

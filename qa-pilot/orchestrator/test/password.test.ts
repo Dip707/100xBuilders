@@ -26,4 +26,19 @@ describe("password", () => {
       expect(await verifyPassword("anything", bad), bad).toBe(false);
     }
   });
+
+  it("returns false rather than throwing for a hash whose parameters pass the shape regex but are invalid at runtime", async () => {
+    const salt = Buffer.alloc(16, 1).toString("base64");
+    const key = Buffer.alloc(64, 2).toString("base64");
+
+    // N=20000 is all digits, so it passes the parse() regex, but scrypt requires N to be a
+    // power of two and rejects this one at the crypto layer.
+    const nNotPowerOfTwo = `scrypt$N=20000,r=8,p=1$${salt}$${key}`;
+    await expect(verifyPassword("anything", nNotPowerOfTwo)).resolves.toBe(false);
+
+    // N=1048576 is a valid power of two, but at r=8 it needs ~1GiB of memory, which exceeds
+    // Node's default scrypt maxmem (32MiB) and makes the derivation reject.
+    const nExceedsMaxmem = `scrypt$N=1048576,r=8,p=1$${salt}$${key}`;
+    await expect(verifyPassword("anything", nExceedsMaxmem)).resolves.toBe(false);
+  });
 });

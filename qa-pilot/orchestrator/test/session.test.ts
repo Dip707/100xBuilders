@@ -35,6 +35,23 @@ describe("session", () => {
     expect(remote.headers.get("set-cookie") ?? "").toContain("Secure");
   });
 
+  it("derives secure from the request scheme, not a hostname check that a spoofed Host header could influence", async () => {
+    const app = new Hono();
+    app.get("/set", (c) => { setSessionCookie(c, "tok-123"); return c.text("ok"); });
+    app.get("/clear", (c) => { clearSessionCookie(c); return c.text("ok"); });
+
+    // A plain-http request to a non-localhost address (e.g. a LAN demo such as
+    // `http://192.168.1.5:4000`) must not get a Secure cookie: the browser would refuse to
+    // store it at all, silently breaking login. Under the old hostname check this host is
+    // not "localhost", so it would have set Secure and broken exactly this case - it fails
+    // under the old rule and passes under the scheme-based one.
+    const lanSet = await app.request("http://192.168.1.5:4000/set");
+    expect(lanSet.headers.get("set-cookie") ?? "").not.toContain("Secure");
+
+    const lanClear = await app.request("http://192.168.1.5:4000/clear");
+    expect(lanClear.headers.get("set-cookie") ?? "").not.toContain("Secure");
+  });
+
   it("reads the cookie back and clears it", async () => {
     const app = new Hono();
     app.get("/read", (c) => c.text(readSessionCookie(c) ?? "none"));
