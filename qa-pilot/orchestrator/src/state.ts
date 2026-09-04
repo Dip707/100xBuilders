@@ -235,6 +235,19 @@ export function initialState(input: { runId: string; url: string } & Partial<Run
   };
 }
 
+/**
+ * What `startRun` accepts: a run input plus the account that owns the run.
+ *
+ * Deliberately a sibling of RunInputSchema rather than a field on it. `initialState`
+ * parses RunInputSchema and is called from a couple of dozen node-level tests that have
+ * no account and no need for one, so requiring userId there would be pure churn. It is
+ * equally deliberately absent from RunStateAnnotation: the graph has no interest in who
+ * owns a run, and putting it in graph state would widen the checkpointed payload for
+ * nothing.
+ */
+export const StartRunInputSchema = RunInputSchema.extend({ userId: z.string().min(1) });
+export type StartRunInput = z.infer<typeof StartRunInputSchema>;
+
 /** Resolved on every call so tests can point QA_PILOT_OUTPUT at a temp dir. Always ends with "/". */
 export function outputDir(runId: string): string {
   const root = process.env.QA_PILOT_OUTPUT ?? new URL("../../output/", import.meta.url).pathname;

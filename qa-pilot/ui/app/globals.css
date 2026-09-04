@@ -1,26 +1,60 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * One place for every colour and radius in the app. Before this file existed the
+ * components carried literals like neutral-950 and amber-500 inline, which is why the
+ * dark and light halves of the old UI never agreed with each other.
+ */
+@theme {
+  --color-app: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-inset: #f1f1ee;
+  --color-console: #1c1c19;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-line: #e7e6e2;
+  --color-line-strong: #d8d7d2;
+
+  --color-fg: #1b1b19;
+  --color-muted: #85857d;
+  --color-subtle: #a8a8a0;
+
+  --color-accent: #2f6b4f;
+  --color-accent-hover: #275a43;
+  --color-accent-tint: #e8f3ec;
+  --color-accent-fg: #ffffff;
+
+  /*
+   * Status colours. Brand green and "passed" green are deliberately different hues, but
+   * nothing in the UI may rely on hue alone: every status renders an icon and a word.
+   */
+  --color-pass: #16a34a;
+  --color-fail: #c2413a;
+  --color-flaky: #b5761f;
+  --color-defect: #a1201c;
+  --color-env: #6b6b63;
+  --color-human: #6d4aa8;
+
+  --radius-input: 0.5rem;
+  --radius-box: 0.75rem;
+  --radius-card: 1rem;
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/*
+ * The old file set `font-family: Arial, Helvetica, sans-serif` here, which overrode the
+ * Geist variables layout.tsx goes to the trouble of loading. The app was never actually
+ * rendering in the font it downloaded.
+ */
+body {
+  background: var(--color-app);
+  color: var(--color-fg);
+  font-family: var(--font-sans), system-ui, sans-serif;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* A single visible focus treatment, so keyboard navigation is never invisible. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }

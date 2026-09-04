@@ -7,6 +7,7 @@ import { startRun } from "../src/run.js";
 import { buildGraph } from "../src/graph.js";
 import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
+import { memoryStore } from "../src/store/memory.js";
 import { initialState, outputDir, type Flow } from "../src/state.js";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
@@ -39,7 +40,10 @@ describe("full graph against mini-shop with the fake LLM", () => {
       "classify-rationale": { rationale: "Server returned 500 on the coupon endpoint.", confidence_adjustment: 0 },
       heal: { role: "button", name: "Apply coupon", reason: "unchanged", confidence: 0.2 },
     });
-    const { runId, done } = startRun({ runId: "it-1", url: shop.base, credentials: { username: "demo@shop.test", password: "demo1234" }, intent: "login and checkout coupon", maxFlows: 12, budget: { maxLlmCalls: 200, maxMinutes: 40 } }, { headless: true, llm });
+    const { runId, done } = await startRun(
+      { runId: "it-1", userId: "u-test", url: shop.base, credentials: { username: "demo@shop.test", password: "demo1234" }, intent: "login and checkout coupon", maxFlows: 12, budget: { maxLlmCalls: 200, maxMinutes: 40 } },
+      { headless: true, llm, store: memoryStore() },
+    );
     const final = await done;
     await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ breakCoupon: false }) });
     const dir = process.env.QA_PILOT_OUTPUT + runId + "/";

@@ -3,7 +3,7 @@
   "private": true,
   "workspaces": ["orchestrator", "runner", "targets/mini-shop", "ui"],
   "scripts": {
-    "test": "npm run test -w orchestrator -w targets/mini-shop",
+    "test": "npm run test -w orchestrator -w targets/mini-shop -w ui",
     "typecheck": "npm run typecheck -w orchestrator -w runner -w targets/mini-shop",
     "shop": "npm run start -w targets/mini-shop",
     "api": "npm run api -w orchestrator",
