@@ -1,7 +1,7 @@
 import type { RunEvent } from "./events";
 
 /** The pipeline nodes, in the order the strip renders them. */
-export const NODES = ["explore", "plan", "evaluate_coverage", "generate", "run", "classify", "heal", "report"] as const;
+export const NODES = ["explore", "plan", "evaluate_coverage", "review", "generate", "run", "classify", "heal", "report"] as const;
 export type NodeName = (typeof NODES)[number];
 
 export type NodeState = { node: NodeName; visits: number; active: boolean };

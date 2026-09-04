@@ -13,6 +13,10 @@ export default defineConfig({
     baseURL: process.env.QA_PILOT_BASE_URL ?? "http://localhost:3005",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    // Every test is recorded so the UI can replay it; the run node copies the file out
+    // before Playwright's next invocation wipes this output directory.
+    video: { mode: "on", size: { width: 1280, height: 800 } },
+    viewport: { width: 1280, height: 800 },
     headless: true,
   },
 });

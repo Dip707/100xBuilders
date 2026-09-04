@@ -1,12 +1,16 @@
 const STYLES: Record<string, { label: string; icon: string; className: string }> = {
   // run status
   running:     { label: "running",     icon: "◌", className: "bg-accent-tint text-accent" },
+  awaiting_review: { label: "awaiting review", icon: "☰", className: "bg-inset text-human" },
   done:        { label: "done",        icon: "✓", className: "bg-accent-tint text-accent" },
   partial:     { label: "partial",     icon: "◑", className: "bg-inset text-flaky" },
-  failed:      { label: "failed",      icon: "✕", className: "bg-inset text-fail" },
+  failed:      { label: "failed",      icon: "✕", className: "bg-fail/10 text-fail" },
   interrupted: { label: "interrupted", icon: "⦸", className: "bg-inset text-env" },
+  // test case status
+  planned:     { label: "planned",     icon: "◌", className: "bg-inset text-muted" },
+  blocked:     { label: "blocked",     icon: "◑", className: "bg-inset text-flaky" },
   // test outcome
-  passed:      { label: "passed",      icon: "✓", className: "bg-inset text-pass" },
+  passed:      { label: "passed",      icon: "✓", className: "bg-pass/10 text-pass" },
   timedOut:    { label: "timed out",   icon: "✕", className: "bg-inset text-fail" },
   skipped:     { label: "skipped",     icon: "–", className: "bg-inset text-env" },
   // classification

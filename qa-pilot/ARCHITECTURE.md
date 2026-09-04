@@ -38,6 +38,21 @@ Every node emits `node_start` and `node_end`.
 Every branch appends a `Decision` to state and to `decisions.jsonl`.
 The API replays `events.jsonl` then streams live over SSE.
 
+The runner is a separate process with no handle on the event bus, so it reports through the filesystem.
+While a test executes, the Playwright fixture streams JPEG frames from the Chromium screencast to `live/<test>/frame.jpg` and keeps a `state.json` beside it; the run node polls that directory and emits one `test_start` per test the moment its state says `running`.
+Every test is recorded on video; because Playwright wipes its output directory on each invocation and this pipeline invokes it many times per run, the run node copies each recording to `traces/videos/<test>.webm` and records that path on the `test_result`.
+
+## The review gate
+
+A run started with `reviewPlan` routes from the coverage gate to a `review` node the graph is compiled to interrupt before.
+`startRun` parks there, records the run as `awaiting_review`, and waits for `POST /runs/:id/review`, whose body (the possibly edited, possibly trimmed plan) is written into the checkpoint as the review node's own output before the graph resumes into the generation fan-out.
+Runs that did not ask for review never route through the node, so the default pipeline stays autonomous.
+
+## Single-test re-run
+
+`POST /runs/:id/tests/:testId/rerun` executes one generated spec again in place, merges the fresh result into `results.json`, and appends the events to the run's log so the test's latest status moves without a new run.
+The target's login steps carry its credentials and are never written to disk, so after an API restart only tests that do not sign in can be re-run; the route says so instead of failing at login.
+
 ## Milestone log
 
 | Milestone | Command | Result |

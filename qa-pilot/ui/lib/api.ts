@@ -3,7 +3,7 @@
 export const API = process.env.NEXT_PUBLIC_QA_PILOT_API ?? "http://localhost:4000";
 
 export type PublicUser = { id: string; email: string; createdAt: string };
-export type RunStatus = "running" | "done" | "partial" | "failed" | "interrupted";
+export type RunStatus = "running" | "awaiting_review" | "done" | "partial" | "failed" | "interrupted";
 
 export type RunRecord = {
   id: string; userId: string; url: string; intent?: string; hasPrd: boolean;
@@ -22,6 +22,8 @@ export type NewRunInput = {
   credentials?: { username: string; password: string };
   maxFlows?: number;
   budget?: { maxLlmCalls: number; maxMinutes: number };
+  /** Pause after the coverage gate so the plan can be reviewed before tests are generated. */
+  reviewPlan?: boolean;
 };
 
 export class ApiError extends Error {
@@ -73,6 +75,20 @@ export const getRun = (id: string) => apiFetch<{ run: RunRecord; manifest: Artif
 
 export const startRun = (input: NewRunInput) =>
   apiFetch<{ runId: string }>("/run", { method: "POST", body: JSON.stringify(input) }).then((r) => r.runId);
+
+/** Hands the reviewed (possibly trimmed or edited) plan to a run parked at the review gate. */
+export const submitReview = (runId: string, flows: unknown[]) =>
+  apiFetch<{ ok: true; flows: number }>(`/runs/${encodeURIComponent(runId)}/review`, { method: "POST", body: JSON.stringify({ flows }) });
+
+/** Re-executes one generated test of a finished run; resolves with its fresh result. */
+export const rerunTest = (runId: string, testId: string) =>
+  apiFetch<{ result: unknown }>(`/runs/${encodeURIComponent(runId)}/tests/${encodeURIComponent(testId)}/rerun`, { method: "POST" }).then((r) => r.result);
+
+/** Fetches a run artifact as text; null when it is not there (yet). */
+export async function fetchArtifact(runId: string, relPath: string): Promise<string | null> {
+  const res = await fetch(fileUrl(runId, relPath), { credentials: "include" });
+  return res.ok ? res.text() : null;
+}
 
 export const reportUrl = (runId: string) => `${API}/report/${encodeURIComponent(runId)}`;
 

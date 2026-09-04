@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import type { Decision } from "./state.js";
 import { outputDir } from "./state.js";
 
-export type RunEventType = "node_start" | "node_end" | "decision" | "agent_log" | "screenshot" | "test_result" | "error" | "done";
+export type RunEventType = "node_start" | "node_end" | "decision" | "agent_log" | "screenshot" | "test_start" | "test_result" | "error" | "done";
 export type RunEvent = {
   type: RunEventType;
   runId: string;

@@ -2,7 +2,8 @@ import { pipelineState } from "@/lib/derive";
 import type { RunEvent } from "@/lib/events";
 
 export function Pipeline({ events }: { events: RunEvent[] }) {
-  const nodes = pipelineState(events);
+  // The review gate is optional; a run that never asked for it should not show an empty step.
+  const nodes = pipelineState(events).filter((n) => n.node !== "review" || n.visits > 0);
   return (
     <div className="overflow-x-auto">
       <ol className="flex min-w-max items-center gap-1 py-1">

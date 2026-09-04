@@ -8,7 +8,7 @@ import { resolve, relative, isAbsolute } from "node:path";
 import { z } from "zod";
 import { getBus } from "./events.js";
 import { outputDir, RunInputSchema, type StartRunInput } from "./state.js";
-import { startRun, newRunId } from "./run.js";
+import { startRun, newRunId, submitReview, awaitingReview, rerunTest, rerunBlocker, ReviewSubmissionSchema } from "./run.js";
 import { defaultStore } from "./store/index.js";
 import type { RunRecord, Store } from "./store/types.js";
 import { authRoutes } from "./auth/routes.js";
@@ -19,7 +19,7 @@ import { artifactManifest } from "./runs/manifest.js";
 // the handler supplies it from the session when it builds the StartRunInput.
 const BodySchema = RunInputSchema.omit({ runId: true, prdText: true }).extend({ prd: z.string().optional() });
 
-const MIME: Record<string, string> = { html: "text/html", png: "image/png", zip: "application/zip", json: "application/json", md: "text/markdown", ts: "text/plain", jsonl: "text/plain" };
+const MIME: Record<string, string> = { html: "text/html", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webm: "video/webm", zip: "application/zip", json: "application/json", md: "text/markdown", ts: "text/plain", jsonl: "text/plain" };
 
 const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
 
@@ -30,6 +30,9 @@ function isValidRunId(runId: string): boolean {
 export function createApi(opts: {
   start: (input: StartRunInput) => Promise<{ runId: string }> | { runId: string };
   store: Store;
+  /** Injectable so the API tests do not spawn Playwright. */
+  rerun?: (runId: string, testId: string, store: Store) => Promise<unknown | null>;
+  rerunBlocker?: (runId: string, testId: string, store: Store) => Promise<string | null>;
 }) {
   const app = new Hono<AuthEnv>();
   const { store } = opts;
@@ -95,6 +98,35 @@ export function createApi(opts: {
     return c.json({ run, manifest: artifactManifest(runId) });
   });
 
+  /**
+   * The reviewed plan for a run paused at the review gate. Whatever the reviewer kept -
+   * possibly edited, possibly a subset - becomes the plan the generator sees.
+   */
+  app.post("/runs/:runId/review", async (c) => {
+    const runId = c.req.param("runId");
+    if (!(await ownedRun(runId, c.get("user").id))) return c.json({ error: "not found" }, 404);
+    const parsed = ReviewSubmissionSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    if (!awaitingReview(runId)) return c.json({ error: "this run is not waiting for review" }, 409);
+    submitReview(runId, parsed.data.flows);
+    return c.json({ ok: true, flows: parsed.data.flows.length });
+  });
+
+  /** Re-executes one generated test of a finished run and returns its fresh result. */
+  app.post("/runs/:runId/tests/:testId/rerun", async (c) => {
+    const runId = c.req.param("runId");
+    const testId = c.req.param("testId");
+    const run = await ownedRun(runId, c.get("user").id);
+    if (!run || !isValidRunId(testId)) return c.json({ error: "not found" }, 404);
+    if (run.status === "running" || run.status === "awaiting_review") return c.json({ error: "the run is still in progress" }, 409);
+    const blocker = await (opts.rerunBlocker ?? rerunBlocker)(runId, testId, store);
+    if (blocker === "test not found") return c.json({ error: blocker }, 404);
+    if (blocker) return c.json({ error: blocker }, 409);
+    const result = await (opts.rerun ?? rerunTest)(runId, testId, store);
+    if (!result) return c.json({ error: "this test is already being re-run" }, 409);
+    return c.json({ result });
+  });
+
   app.get("/events/:runId", async (c) => {
     const runId = c.req.param("runId");
     if (!(await ownedRun(runId, c.get("user").id))) return c.json({ error: "not found" }, 404);
@@ -141,7 +173,11 @@ export function createApi(opts: {
     const relPath = relative(root, path);
     if (relPath === "" || relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(path)) return c.text("not found", 404);
     const ext = path.split(".").pop() ?? "";
-    return c.body(new Uint8Array(readFileSync(path)), 200, { "content-type": MIME[ext] ?? "application/octet-stream" });
+    // Recordings, traces and screenshots are written once and may be cached; everything
+    // else - live frames, plan.json, results.json, generated specs - is rewritten while
+    // the run progresses and a cached copy would show the UI a stale plan.
+    const cache = relPath.startsWith("traces/") ? "private, max-age=3600" : "no-store";
+    return c.body(new Uint8Array(readFileSync(path)), 200, { "content-type": MIME[ext] ?? "application/octet-stream", "cache-control": cache });
   });
 
   return app;

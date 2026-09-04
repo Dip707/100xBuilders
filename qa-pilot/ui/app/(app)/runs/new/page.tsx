@@ -31,6 +31,7 @@ export default function NewRunPage() {
   const [prdMode, setPrdMode] = useState<"upload" | "paste">("upload");
   const [prd, setPrd] = useState("");
   const [prdName, setPrdName] = useState<string | null>(null);
+  const [reviewPlan, setReviewPlan] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [maxFlows, setMaxFlows] = useState(12);
   const [maxLlmCalls, setMaxLlmCalls] = useState(200);
@@ -62,6 +63,7 @@ export default function NewRunPage() {
         credentials: requiresSignIn && username && password ? { username, password } : undefined,
         maxFlows,
         budget: { maxLlmCalls, maxMinutes },
+        reviewPlan,
       });
       router.push(`/runs/${runId}`);
     } catch (err) {
@@ -145,6 +147,17 @@ export default function NewRunPage() {
                 </div>
               </div>
             </Field>
+          </CardRow>
+        </Card>
+
+        <Card title="Review">
+          <CardRow>
+            <div className="py-5">
+              <Checkbox
+                checked={reviewPlan} onChange={setReviewPlan} label="Review the plan before tests are generated?"
+                help="Pauses the run once the plan has passed the coverage gate so you can rename, re-prioritise or drop proposed tests. Leave it off for a fully autonomous run."
+              />
+            </div>
           </CardRow>
         </Card>
 

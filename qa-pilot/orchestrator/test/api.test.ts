@@ -140,3 +140,73 @@ describe("api", () => {
     }
   });
 });
+
+describe("plan review and single-test rerun routes", () => {
+  it("409s a review for a run that is not waiting, 400s an invalid plan, 404s a foreign run", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-review-")) + "/";
+    await own("rv-1");
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+    const headers = { cookie, "content-type": "application/json" };
+    const flows = [{ id: "auth-001", title: "Sign in works", category: "happy", priority: "P0", preconditions: ["logged_out"], source: "explored",
+      steps: [{ action: "goto", target: "/login" }], expected: [{ type: "url_contains", value: "/products" }] }];
+
+    const notWaiting = await app.request(`${ORIGIN}/runs/rv-1/review`, { method: "POST", body: JSON.stringify({ flows }), headers });
+    expect(notWaiting.status).toBe(409);
+
+    const invalid = await app.request(`${ORIGIN}/runs/rv-1/review`, { method: "POST", body: JSON.stringify({ flows: [{ id: "BAD ID" }] }), headers });
+    expect(invalid.status).toBe(400);
+
+    const foreign = await app.request(`${ORIGIN}/runs/somebody-elses/review`, { method: "POST", body: JSON.stringify({ flows }), headers });
+    expect(foreign.status).toBe(404);
+  });
+
+  it("re-runs one test of a finished run, and refuses while the run is in progress or its session is gone", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-rerun-")) + "/";
+    await own("rr-done");
+    await store.insertRun({ id: "rr-live", userId, url: "http://localhost:3005", hasPrd: false, status: "running", startedAt: new Date().toISOString() });
+    const calls: string[] = [];
+    const app = createApi({
+      store, start: () => ({ runId: "x" }),
+      rerunBlocker: async (runId, testId) => (testId === "nope" ? "test not found" : runId === "rr-done" ? null : "credentials are no longer in memory"),
+      rerun: async (runId, testId) => { calls.push(`${runId}/${testId}`); return { id: testId, status: "passed" }; },
+    });
+    const headers = { cookie };
+
+    const live = await app.request(`${ORIGIN}/runs/rr-live/tests/auth-001/rerun`, { method: "POST", headers });
+    expect(live.status).toBe(409);
+
+    const ok = await app.request(`${ORIGIN}/runs/rr-done/tests/auth-001/rerun`, { method: "POST", headers });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ result: { id: "auth-001", status: "passed" } });
+    expect(calls).toEqual(["rr-done/auth-001"]);
+
+    const unknownTest = await app.request(`${ORIGIN}/runs/rr-done/tests/nope/rerun`, { method: "POST", headers });
+    expect(unknownTest.status).toBe(404);
+
+    await own("rr-old");
+    const gone = await app.request(`${ORIGIN}/runs/rr-old/tests/auth-001/rerun`, { method: "POST", headers });
+    expect(gone.status).toBe(409);
+    expect((await gone.json()).error).toContain("no longer in memory");
+    // Only the runnable request reached the rerun function; the in-progress, unknown-test and gone-session ones never did.
+    expect(calls).toEqual(["rr-done/auth-001"]);
+  });
+
+  it("serves live preview frames uncached and videos as webm", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-live-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "lv/live/auth-001", { recursive: true });
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "lv/traces/videos", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "lv/live/auth-001/frame.jpg", "jpeg-bytes");
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "lv/traces/videos/auth-001.webm", "webm-bytes");
+    await own("lv");
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+
+    const frame = await app.request(`${ORIGIN}/runs/lv/files/live/auth-001/frame.jpg`, { headers: { cookie } });
+    expect(frame.status).toBe(200);
+    expect(frame.headers.get("content-type")).toBe("image/jpeg");
+    expect(frame.headers.get("cache-control")).toBe("no-store");
+
+    const video = await app.request(`${ORIGIN}/runs/lv/files/traces/videos/auth-001.webm`, { headers: { cookie } });
+    expect(video.headers.get("content-type")).toBe("video/webm");
+    expect(video.headers.get("cache-control")).not.toBe("no-store");
+  });
+});

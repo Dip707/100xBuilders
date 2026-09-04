@@ -1,9 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { relativeTime, formatDuration, hostOf } from "@/lib/format";
 
 function isoOffset(ms: number): string {
   return new Date(Date.now() + ms).toISOString();
 }
+
+// relativeTime reads the clock itself. Without a frozen clock, the milliseconds that pass
+// between building the fixture and formatting it tip the rounding ("5 seconds ago" became
+// "6 seconds ago" whenever the machine was busy), which made this file flaky.
+beforeAll(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-04T12:00:00.000Z")); });
+afterAll(() => { vi.useRealTimers(); });
 
 describe("relativeTime", () => {
   it("renders a past timestamp a few seconds ago", () => {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { outputDir, type RunResults, type RunState, type RunUpdate, type Step, type TestResult } from "../state.js";
 import { writeOutput } from "../output.js";
@@ -47,6 +47,64 @@ function parseAnnotation<T>(list: { type: string; description?: string }[] | und
   try { return JSON.parse(a.description) as T; } catch { return fallback; }
 }
 
+/**
+ * Playwright wipes its output directory on every invocation, and this pipeline invokes it
+ * many times per run (once per generated flow, then for the suite, then for every heal or
+ * rerun). A recording left where Playwright wrote it would vanish on the next call, so it
+ * is copied to `traces/videos/<id>.webm`, which only this function ever writes.
+ */
+function keepVideo(runDir: string, id: string, videoPath: string | undefined): string | undefined {
+  if (!videoPath || !existsSync(videoPath)) return undefined;
+  const dir = join(runDir, "traces", "videos");
+  mkdirSync(dir, { recursive: true });
+  const dest = join(dir, `${id}.webm`);
+  try {
+    copyFileSync(videoPath, dest);
+    return dest;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where the runner streams live frames for this run; one subdirectory per test id. */
+export function liveDir(runId: string): string {
+  return outputDir(runId) + "live";
+}
+
+/**
+ * Polls the live directory while Playwright runs and emits one `test_start` per test the
+ * moment its state file says `running`. The runner is a separate process with no handle on
+ * the event bus, so a file on disk is the channel; 250ms keeps the UI's "running" pill within
+ * a blink of the truth without touching the bus with frame data. Only state files written
+ * after the watcher started count, so a file left behind by an earlier invocation - one per
+ * generated flow, then the suite, then every heal or rerun - is never announced twice.
+ */
+function watchLive(dir: string, bus: NodeDeps["bus"] | undefined, only?: Set<string>): () => void {
+  if (!bus) return () => {};
+  const since = Date.now();
+  const announced = new Set<string>();
+  const scan = () => {
+    if (!existsSync(dir)) return;
+    for (const id of readdirSync(dir)) {
+      // Generation runs one invocation per flow, concurrently, each with its own watcher;
+      // without this filter every watcher would announce every other flow's test too.
+      if (announced.has(id) || (only && !only.has(id))) continue;
+      const statePath = join(dir, id, "state.json");
+      if (!existsSync(statePath) || statSync(statePath).mtimeMs < since) continue;
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf8")) as { status?: string; title?: string };
+        if (state.status !== "running") continue;
+        announced.add(id);
+        bus.emit({ type: "test_start", message: `${id} running`, data: { id, title: state.title ?? id } });
+      } catch {
+        /* half-written file: the next tick reads it whole */
+      }
+    }
+  };
+  const timer = setInterval(scan, 250);
+  return () => { clearInterval(timer); scan(); };
+}
+
 export function parseJsonReport(report: unknown, testDir: string, traceDir: string): TestResult[] {
   const r = report as JsonReport;
   const out: TestResult[] = [];
@@ -73,6 +131,7 @@ export function parseJsonReport(report: unknown, testDir: string, traceDir: stri
       consoleErrors: parseAnnotation(annotations, "console", []),
       pageErrors: parseAnnotation(annotations, "pageerror", []),
       tracePath: last?.attachments?.find((a) => a.name === "trace")?.path ?? findTrace(traceDir, id),
+      videoPath: last?.attachments?.find((a) => a.name === "video")?.path,
       durationMs: last?.duration ?? 0,
     });
   }
@@ -84,8 +143,10 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
   const testDir = dir + "tests";
   const traceDir = dir + "traces/playwright";
   const jsonReport = dir + "results.raw.json";
+  const live = liveDir(opts.runId);
   const args = ["playwright", "test", "--config", join(RUNNER_DIR, "playwright.config.ts"), ...(opts.files ?? []).map((f) => resolve(f))];
   opts.bus?.log("runner", `npx ${args.join(" ")}`);
+  const stopWatching = watchLive(live, opts.bus, opts.files ? new Set(opts.files.map((f) => f.split("/").pop()!.replace(/\.spec\.ts$/, ""))) : undefined);
   await new Promise<void>((resolveRun) => {
     const child = spawn("npx", args, {
       cwd: RUNNER_DIR,
@@ -96,6 +157,7 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
         QA_PILOT_JSON_REPORT: jsonReport,
         QA_PILOT_BASE_URL: opts.baseUrl,
         QA_PILOT_LOGIN_STEPS: JSON.stringify(opts.loginSteps),
+        QA_PILOT_LIVE_DIR: live,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -107,6 +169,7 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
     });
     child.on("close", () => resolveRun());
   });
+  stopWatching();
   let report: JsonReport;
   if (existsSync(jsonReport)) {
     try {
@@ -118,7 +181,7 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
   } else {
     report = { suites: [] };
   }
-  const tests = parseJsonReport(report, testDir, traceDir);
+  const tests = parseJsonReport(report, testDir, traceDir).map((t) => ({ ...t, videoPath: keepVideo(dir, t.id, t.videoPath) }));
   for (const t of tests) opts.bus?.emit({ type: "test_result", message: `${t.id} ${t.status}`, data: t });
   return { tests, at: now() };
 }
