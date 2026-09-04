@@ -1,9 +1,8 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { API } from "./api";
 
 export type RunEvent = { type: string; runId: string; at: string; node?: string; agent?: string; message?: string; data?: unknown };
-export const API = process.env.NEXT_PUBLIC_QA_PILOT_API ?? "http://localhost:4000";
-export const NODES = ["explore", "plan", "evaluate_coverage", "generate", "run", "classify", "heal", "report"] as const;
 
 export function useRunEvents(runId: string | null) {
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -25,7 +24,9 @@ export function useRunEvents(runId: string | null) {
   }
   useEffect(() => {
     if (!runId) return;
-    const es = new EventSource(`${API}/events/${runId}`);
+    // The events route is authenticated, and EventSource sends no cookies cross-origin
+    // unless it is told to.
+    const es = new EventSource(`${API}/events/${runId}`, { withCredentials: true });
     ref.current = es;
     const push = (e: MessageEvent) => {
       // "error" is both our app-level SSE event name and EventSource's native
@@ -46,12 +47,4 @@ export function useRunEvents(runId: string | null) {
     // lockstep with runId and does not need to be listed separately.
   }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
   return events;
-}
-
-export async function startRun(body: { url: string; intent?: string; prd?: string; username?: string; password?: string }): Promise<string> {
-  const payload: Record<string, unknown> = { url: body.url, intent: body.intent || undefined, prd: body.prd || undefined };
-  if (body.username && body.password) payload.credentials = { username: body.username, password: body.password };
-  const res = await fetch(`${API}/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-  if (!res.ok) throw new Error(await res.text());
-  return (await res.json()).runId as string;
 }
