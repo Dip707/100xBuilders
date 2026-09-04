@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
 import { runPlaywright, parseJsonReport } from "../src/nodes/run.js";
+import { EventBus } from "../src/events.js";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
@@ -62,6 +63,25 @@ describe("runPlaywright", () => {
     expect(byId["checkout-001"].error).toMatch(/Coupon applied|toContainText/);
     expect(byId["checkout-001"].tracePath).toMatch(/trace\.zip$/);
   }, 120_000);
+
+  it("survives spawn failure when npx is not on PATH", async () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "qa-spawn-")) + "/";
+    mkdirSync(outputDir + "spawnfail/tests", { recursive: true });
+    process.env.QA_PILOT_OUTPUT = outputDir;
+    const bus = new EventBus("spawnfail", outputDir + "spawnfail/");
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = "";
+      const results = await runPlaywright({ runId: "spawnfail", baseUrl: "http://127.0.0.1:1", loginSteps: [], bus });
+      expect(results.tests).toEqual([]);
+      const replay = bus.replay();
+      const errorEvent = replay.find((e) => e.type === "error" && e.node === "run");
+      expect(errorEvent).toBeDefined();
+      expect(errorEvent?.message).toMatch(/spawn/i);
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  }, 10_000);
 });
 
 describe("parseJsonReport", () => {

@@ -101,9 +101,23 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
     });
     child.stdout.on("data", (d) => opts.bus?.log("runner", String(d).trim()));
     child.stderr.on("data", (d) => opts.bus?.log("runner", String(d).trim()));
+    child.on("error", (err) => {
+      opts.bus?.emit({ type: "error", node: "run", message: `playwright spawn failed: ${err.message}` });
+      resolveRun();
+    });
     child.on("close", () => resolveRun());
   });
-  const report = existsSync(jsonReport) ? JSON.parse(readFileSync(jsonReport, "utf8")) : { suites: [] };
+  let report: JsonReport;
+  if (existsSync(jsonReport)) {
+    try {
+      report = JSON.parse(readFileSync(jsonReport, "utf8"));
+    } catch (err) {
+      opts.bus?.emit({ type: "error", node: "run", message: `failed to parse playwright report: ${err instanceof Error ? err.message : String(err)}` });
+      report = { suites: [] };
+    }
+  } else {
+    report = { suites: [] };
+  }
   const tests = parseJsonReport(report, testDir, traceDir);
   for (const t of tests) opts.bus?.emit({ type: "test_result", message: `${t.id} ${t.status}`, data: t });
   return { tests, at: now() };
