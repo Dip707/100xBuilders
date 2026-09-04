@@ -139,37 +139,53 @@ describe("run ownership", () => {
   });
 
   describe("isValidRunId guards a run the caller genuinely owns", () => {
-    // A malformed id like "../escape" must be rejected on format grounds alone, even when
-    // an owned run record exists under that exact id - otherwise deleting isValidRunId
-    // would leave this suite green, since a missing store record also 404s.
-    let traversalId: string;
+    // Two malformed ids, both rejected by isValidRunId (the regex, or the explicit "."/".."
+    // check), but for different reasons - and only one of them actually proves the guard runs.
+    //
+    // "../escape": the obvious path-traversal id. outputDir("../escape") resolves OUTSIDE the
+    // test's temp dir, where no report.html and no file "x" ever get created. So /report and
+    // /files/x already answer 404 from a plain existsSync check, with or without the guard -
+    // this id alone would let a deleted isValidRunId slip through undetected.
+    //
+    // "sub/dir": contains a forward slash, which RUN_ID_RE (^[A-Za-z0-9._-]+$) still rejects,
+    // but outputDir("sub/dir") resolves to "<temp>/sub/dir/" - INSIDE the test's temp dir. By
+    // creating a real report.html and a real file "x" there, /report/sub%2Fdir and
+    // /runs/sub%2Fdir/files/x would genuinely succeed (200) if isValidRunId were removed, since
+    // the files exist and the run record is owned by alice. So a 404 for this id can only be
+    // coming from the format guard itself, not from a missing store record or a missing file.
+    const malformedIds = ["../escape", "sub/dir"];
 
     beforeEach(async () => {
-      traversalId = "../escape";
-      await store.insertRun({ id: traversalId, userId: alice.id, url: "http://localhost:3005", hasPrd: false, status: "done", startedAt: new Date().toISOString() });
+      for (const id of malformedIds) {
+        await store.insertRun({ id, userId: alice.id, url: "http://localhost:3005", hasPrd: false, status: "done", startedAt: new Date().toISOString() });
+      }
+      const dir = process.env.QA_PILOT_OUTPUT + "sub/dir/";
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(dir + "report.html", "<h1>sub/dir</h1>");
+      writeFileSync(dir + "x", "payload");
     });
 
-    it("404s /runs/:id for an owned but malformed id", async () => {
+    it.each(malformedIds)("404s /runs/:id for an owned but malformed id (%s)", async (id) => {
       const app = createApi({ start: () => ({ runId: "x" }), store });
-      const res = await app.request(`${ORIGIN}/runs/${encodeURIComponent(traversalId)}`, { headers: { cookie: alice.cookie } });
+      const res = await app.request(`${ORIGIN}/runs/${encodeURIComponent(id)}`, { headers: { cookie: alice.cookie } });
       expect(res.status).toBe(404);
     });
 
-    it("404s /events/:id for an owned but malformed id", async () => {
+    it.each(malformedIds)("404s /events/:id for an owned but malformed id (%s)", async (id) => {
       const app = createApi({ start: () => ({ runId: "x" }), store });
-      const res = await app.request(`${ORIGIN}/events/${encodeURIComponent(traversalId)}`, { headers: { cookie: alice.cookie } });
+      const res = await app.request(`${ORIGIN}/events/${encodeURIComponent(id)}`, { headers: { cookie: alice.cookie } });
       expect(res.status).toBe(404);
     });
 
-    it("404s /report/:id for an owned but malformed id", async () => {
+    it.each(malformedIds)("404s /report/:id for an owned but malformed id (%s)", async (id) => {
       const app = createApi({ start: () => ({ runId: "x" }), store });
-      const res = await app.request(`${ORIGIN}/report/${encodeURIComponent(traversalId)}`, { headers: { cookie: alice.cookie } });
+      const res = await app.request(`${ORIGIN}/report/${encodeURIComponent(id)}`, { headers: { cookie: alice.cookie } });
       expect(res.status).toBe(404);
     });
 
-    it("404s /runs/:id/files/x for an owned but malformed id", async () => {
+    it.each(malformedIds)("404s /runs/:id/files/x for an owned but malformed id (%s)", async (id) => {
       const app = createApi({ start: () => ({ runId: "x" }), store });
-      const res = await app.request(`${ORIGIN}/runs/${encodeURIComponent(traversalId)}/files/x`, { headers: { cookie: alice.cookie } });
+      const res = await app.request(`${ORIGIN}/runs/${encodeURIComponent(id)}/files/x`, { headers: { cookie: alice.cookie } });
       expect(res.status).toBe(404);
     });
   });
