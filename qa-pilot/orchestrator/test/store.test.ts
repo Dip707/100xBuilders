@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { memoryStore } from "../src/store/memory.js";
 import { withDerivedStatus, STALE_HEARTBEAT_MS, EmailTakenError, type Store, type RunRecord } from "../src/store/types.js";
 
@@ -9,7 +9,21 @@ function runRec(over: Partial<RunRecord> = {}): RunRecord {
   };
 }
 
+// The Mongo pass runs only when a URL is configured. It forces a database name ending in
+// "_test" and refuses to drop anything else, so a stray run can never wipe the real
+// qa_pilot database on a shared Atlas cluster.
+// Deliberately reads the environment WITHOUT loading .env, so the default `npm test`
+// stays hermetic and offline. MONGO_URI is accepted alongside the canonical name because
+// that is what the operator's .env already uses (Rulings 4 and 5).
+const mongoUrl = process.env.QA_PILOT_MONGO_URL ?? process.env.MONGO_URI;
+const mongoDb = `qa_pilot_contract_${process.pid}_test`;
+
 const factories: Array<[string, () => Promise<Store>]> = [["memory", async () => memoryStore()]];
+if (mongoUrl) factories.push(["mongo", async () => {
+  const { mongoStore, dropDatabaseForTests } = await import("../src/store/mongo.js");
+  await dropDatabaseForTests(mongoUrl, mongoDb);
+  return mongoStore({ url: mongoUrl, db: mongoDb });
+}]);
 
 describe.each(factories)("store contract (%s)", (_name, make) => {
   let store: Store;
@@ -75,6 +89,12 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     const listed = await store.listRuns("u1");
     expect(listed.find((r) => r.id === "run-stale")!.status).toBe("interrupted");
   });
+});
+
+afterAll(async () => {
+  if (!mongoUrl) return;
+  const { dropDatabaseForTests } = await import("../src/store/mongo.js");
+  await dropDatabaseForTests(mongoUrl, mongoDb);
 });
 
 describe("withDerivedStatus", () => {
