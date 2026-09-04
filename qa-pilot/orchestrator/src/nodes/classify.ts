@@ -23,6 +23,15 @@ const isLocatorError = (err: string) => /waiting for|locator|not found|strict mo
 const isAssertionError = (err: string) => /expect\(|toContainText|toBeVisible|toHaveURL|toHaveValue/i.test(err);
 const isEnvError = (err: string) => /net::ERR|ECONNREFUSED|page\.goto.*Timeout|Navigation timeout|Target closed|browser has been closed/i.test(err);
 
+/** `new URL(url).pathname`, falling back to the raw string for relative or malformed URLs. */
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
 export function scoreSignals(e: Evidence): { weights: Record<Class, number>; evidence: string[] } {
   const w: Record<Class, number> = { script: 0, defect: 0, flaky: 0, env: 0 };
   const ev: string[] = [];
@@ -58,7 +67,7 @@ export function scoreSignals(e: Evidence): { weights: Record<Class, number>; evi
   const bad = e.test.network.filter((n) => n.status >= 400);
   if (bad.length) {
     w.defect += bad.some((n) => n.status >= 500) ? 0.6 : 0.3;
-    ev.push(...bad.slice(0, 3).map((n) => `${n.method} ${new URL(n.url).pathname} returned ${n.status}`));
+    ev.push(...bad.slice(0, 3).map((n) => `${n.method} ${pathOf(n.url)} returned ${n.status}`));
   }
   if (e.test.pageErrors.length) {
     w.defect += 0.3;

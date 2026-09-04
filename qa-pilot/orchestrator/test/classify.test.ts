@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { scoreSignals, classifyOne, type Evidence } from "../src/nodes/classify.js";
-import type { Flow, TestResult } from "../src/state.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scoreSignals, classifyOne, afterClassify, type Evidence } from "../src/nodes/classify.js";
+import { makeDefect } from "../src/nodes/defects.js";
+import { initialState, type Classification, type Flow, type TestResult } from "../src/state.js";
+import { EventBus } from "../src/events.js";
+import { FakeLlmClient } from "../src/llm/client.js";
 
 const flow: Flow = {
   id: "checkout-002", title: "Place order", category: "happy", priority: "P1", preconditions: ["logged_in"], source: "explored",
@@ -33,6 +39,11 @@ describe("scoreSignals", () => {
     const e: Evidence = { test: { ...base, status: "passed" }, flow, snapshotAtFailure: "", controlPassed: null, sameLocatorFailures: 0, previousStatus: "failed" };
     expect(scoreSignals(e).weights.flaky).toBeGreaterThanOrEqual(0.6);
   });
+  it("tolerates a relative or malformed network URL instead of throwing", () => {
+    const e: Evidence = { test: { ...base, network: [{ method: "POST", url: "/api/relative", status: 500, at: 1 }] }, flow, snapshotAtFailure: "", controlPassed: null, sameLocatorFailures: 0 };
+    expect(() => scoreSignals(e)).not.toThrow();
+    expect(scoreSignals(e).evidence.join(" ")).toContain("/api/relative");
+  });
 });
 
 describe("classifyOne", () => {
@@ -59,5 +70,59 @@ describe("classifyOne", () => {
   it("does not heal past 2 attempts", () => {
     const e: Evidence = { test: { ...base, failingStep: 1, error: "Timeout waiting for getByRole('button', { name: 'Place order' })" }, flow, snapshotAtFailure: `- button "Complete purchase"`, controlPassed: true, sameLocatorFailures: 2 };
     expect(classifyOne(e, 2, 0).action).toBe("escalate");
+  });
+});
+
+describe("afterClassify", () => {
+  it("routes based on the action mix and logs exactly one decision per call", () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-classify-")) + "/";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const deps = { bus, llm: new FakeLlmClient({}) };
+    const state = initialState({ runId: "r", url: "http://example.com" });
+    const decisionCount = () => bus.replay().filter((ev) => ev.type === "decision").length;
+
+    let before = decisionCount();
+    const envClassifications: Classification[] = [{ test: "a", class: "env", confidence: 0.9, evidence: [], action: "stop" }];
+    expect(afterClassify({ ...state, classifications: envClassifications }, deps)).toBe("report");
+    expect(decisionCount() - before).toBe(1);
+
+    before = decisionCount();
+    const healClassifications: Classification[] = [
+      { test: "a", class: "script", confidence: 0.9, evidence: [], action: "heal" },
+      { test: "b", class: "defect", confidence: 0.6, evidence: [], action: "rerun" },
+    ];
+    expect(afterClassify({ ...state, classifications: healClassifications }, deps)).toBe("heal");
+    expect(decisionCount() - before).toBe(1);
+
+    before = decisionCount();
+    const rerunClassifications: Classification[] = [{ test: "a", class: "defect", confidence: 0.6, evidence: [], action: "rerun" }];
+    expect(afterClassify({ ...state, classifications: rerunClassifications }, deps)).toBe("rerun");
+    expect(decisionCount() - before).toBe(1);
+
+    before = decisionCount();
+    expect(afterClassify({ ...state, classifications: [] }, deps)).toBe("report");
+    expect(decisionCount() - before).toBe(1);
+  });
+});
+
+describe("makeDefect", () => {
+  it("builds a ticket from a P1 logged_in flow, its trace path, and the evidence list", () => {
+    const state = {
+      ...initialState({ runId: "r", url: "http://example.com" }),
+      plan: [flow],
+      results: { tests: [{ ...base, tracePath: "/tmp/t/trace.zip" }], at: new Date().toISOString() },
+      defects: [],
+    };
+    const evidence = ["POST /api/coupon returned 500"];
+    const defect = makeDefect(state, "checkout-002", "500 Internal Server Error\nfull stack trace here", evidence);
+
+    expect(defect.id.startsWith("DEF-1-")).toBe(true);
+    expect(defect.severity).toBe("high");
+    expect(defect.repro_steps[0]).toBe("Log in with the test credentials");
+    expect(defect.repro_steps.slice(1)).toEqual(
+      flow.steps.map((s, i) => `${i + 1}. ${s.action} ${s.target ?? `${s.role} "${s.name}"`}${s.value ? ` with "${s.value}"` : ""}`),
+    );
+    expect(defect.attachments).toEqual(["/tmp/t/trace.zip"]);
+    expect(defect.actual).toBe("500 Internal Server Error");
   });
 });
