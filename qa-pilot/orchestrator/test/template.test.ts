@@ -37,3 +37,20 @@ describe("actionCode", () => {
     expect(actionCode({ action: "goto", target: "/x" }, "")).toBe("await page.goto('/x');");
   });
 });
+
+describe("unique test data", () => {
+  const loc = "page.getByRole('textbox', { name: 'Email' })";
+  it("renders a {{unique}} placeholder as a runtime template literal", () => {
+    expect(actionCode({ action: "fill", value: "user-{{unique}}@test.com" }, loc)).toBe("await " + loc + ".fill(`user-${unique}@test.com`);");
+    expect(actionCode({ action: "fill", value: "it's `{{unique}}` ${x}" }, loc)).toBe("await " + loc + ".fill(`it's \\`${unique}\\` \\${x}`);");
+  });
+  it("declares the unique token once at the top of a test that uses it", () => {
+    const src = renderSpec(flow, ["await page.goto('/register');", "await " + loc + ".fill(`user-${unique}@test.com`);"], ["await expect(page).toHaveURL(/\\/account/);"]);
+    expect(src).toContain("async ({ page }) => {\n  const unique = Date.now().toString(36);\n  // step 0");
+    expect(src.match(/const unique/g)).toHaveLength(1);
+  });
+  it("leaves a test without the placeholder untouched", () => {
+    const src = renderSpec(flow, ["await page.goto('/login');"], ["await expect(page).toHaveURL(/\\/login/);"]);
+    expect(src).not.toContain("const unique");
+  });
+});

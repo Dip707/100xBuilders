@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useUser } from "@/lib/auth";
+import { Icon, ThemeToggle } from "@/components/ui";
 
 export function UserMenu() {
   const { user, signOut } = useUser();
@@ -19,20 +20,25 @@ export function UserMenu() {
   const initials = (user?.email ?? "?").slice(0, 2).toUpperCase();
 
   return (
-    <div ref={ref} className="relative">
-      {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-full overflow-hidden rounded-box border border-line bg-surface shadow-lg">
-          <button onClick={signOut} className="w-full px-3 py-2 text-left text-sm text-fg hover:bg-inset">Log out</button>
-        </div>
-      )}
-      <button
-        onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-haspopup="menu"
-        className="flex w-full items-center gap-2.5 rounded-box px-2 py-2 text-left hover:bg-inset"
-      >
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent text-[11px] font-bold text-white">{initials}</span>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{user?.email ?? "…"}</span>
-        <span className="text-subtle" aria-hidden="true">⌃</span>
-      </button>
+    <div className="flex items-center gap-1">
+      <div ref={ref} className="relative min-w-0 flex-1">
+        {open && (
+          <div className="absolute bottom-full left-0 mb-1.5 w-full overflow-hidden rounded-input border border-line bg-raised">
+            <button onClick={signOut} className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[13px] text-body transition-colors hover:bg-selected hover:text-fg">
+              <Icon name="logOut" size={14} /> Log out
+            </button>
+          </div>
+        )}
+        <button
+          onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-haspopup="menu"
+          className="flex w-full items-center gap-2 rounded-input px-1.5 py-1.5 text-left transition-colors hover:bg-selected"
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-chip bg-raised text-[10px] font-semibold text-body">{initials}</span>
+          <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted">{user?.email ?? "…"}</span>
+          <Icon name="chevronUpDown" size={13} className="text-subtle" />
+        </button>
+      </div>
+      <ThemeToggle />
     </div>
   );
 }

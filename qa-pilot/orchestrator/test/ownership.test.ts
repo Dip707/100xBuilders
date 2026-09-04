@@ -128,6 +128,11 @@ describe("run ownership", () => {
       updateRun: () => Promise.reject(new Error("unused")),
       touchRun: () => Promise.reject(new Error("unused")),
       getRun: () => Promise.reject(new Error("unused")),
+      insertChat: () => Promise.reject(new Error("unused")),
+      getChat: () => Promise.reject(new Error("unused")),
+      listChats: () => Promise.reject(new Error("unused")),
+      appendChatTurn: () => Promise.reject(new Error("unused")),
+      deleteChat: () => Promise.reject(new Error("unused")),
       listRuns: () => Promise.reject(new Error("unused")),
       close: () => Promise.resolve(),
     };

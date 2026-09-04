@@ -72,7 +72,7 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
   const flows = out.flows.slice(0, state.maxFlows);
   deps.bus.log("planner", `LLM proposed ${flows.length} flows`, { ids: flows.map((f) => f.id) });
 
-  const kit = await BrowserToolkit.launch({ headless: deps.headless, baseUrl: state.url, bus: deps.bus, agent: "planner", screenshotDir: outputDir(state.runId) + "traces/plan" });
+  const kit = await BrowserToolkit.launch({ headless: deps.headless, baseUrl: state.url, bus: deps.bus, runId: state.runId, agent: "planner", screenshotDir: outputDir(state.runId) + "traces/plan" });
   const kept: Flow[] = [];
   const unresolved: string[] = [];
   try {

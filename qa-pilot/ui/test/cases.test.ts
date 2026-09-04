@@ -148,4 +148,19 @@ describe("narration", () => {
     expect(stepStates(f, { status: "failed", result: { id: "auth-001", status: "failed" } })).toEqual({ steps: ["passed", "passed", "passed"], expectations: ["failed"] });
     expect(stepStates(f, { status: "running" }).steps).toEqual(["pending", "pending", "pending"]);
   });
+
+  it("pinpoints the failing expectation when the runner reports its index", () => {
+    const f = flow("auth-001", { expected: [{ type: "url_contains", value: "/products" }, { type: "visible", role: "heading", name: "Products" }, { type: "visible", role: "link", name: "Cart" }] });
+    expect(stepStates(f, { status: "failed", result: { id: "auth-001", status: "failed", failingExpect: 1 } }))
+      .toEqual({ steps: ["passed", "passed", "passed"], expectations: ["passed", "failed", "skipped"] });
+  });
+});
+
+describe("classificationLabel", () => {
+  it("names a healed test as healed and everything else by its class", async () => {
+    const { classificationLabel } = await import("@/lib/cases");
+    expect(classificationLabel({ test: "a", class: "script", confidence: 0.9, evidence: [], action: "healed" })).toBe("healed");
+    expect(classificationLabel({ test: "a", class: "script", confidence: 0.9, evidence: [], action: "heal" })).toBe("script");
+    expect(classificationLabel({ test: "a", class: "defect", confidence: 0.9, evidence: [], action: "escalate" })).toBe("defect");
+  });
 });

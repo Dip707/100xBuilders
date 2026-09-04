@@ -1,5 +1,13 @@
 import { Breadcrumb } from "@/components/ui";
 
+/**
+ * The one header band every screen shares: a sticky 52px bar carrying the breadcrumb and
+ * whatever actions the screen owns. It stays put while the content scrolls, so the trail
+ * back out of a run is always reachable.
+ *
+ * The optional title block below it is for screens that need a stated subject; screens
+ * with their own subject header (a run's URL, for instance) pass crumbs alone.
+ */
 export function PageHeader({
   crumbs, title, subtitle, actions,
 }: {
@@ -10,14 +18,14 @@ export function PageHeader({
 }) {
   return (
     <>
-      <div className="flex items-center justify-between gap-4 border-b border-line px-8 py-4">
+      <div className="sticky top-0 z-30 flex h-[52px] items-center justify-between gap-4 border-b border-line bg-app/85 px-6 backdrop-blur-md">
         <Breadcrumb items={crumbs} />
-        {actions}
+        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </div>
       {title && (
-        <div className="space-y-2 px-8 pb-2 pt-8">
-          <h1 className="text-[28px] font-semibold leading-tight text-fg">{title}</h1>
-          {subtitle && <p className="max-w-2xl text-[15px] leading-relaxed text-muted">{subtitle}</p>}
+        <div className="space-y-1.5 px-6 pb-1 pt-7">
+          <h1 className="text-[26px] font-medium leading-tight tracking-[0.2px] text-fg">{title}</h1>
+          {subtitle && <p className="max-w-2xl text-[13.5px] leading-relaxed text-muted">{subtitle}</p>}
         </div>
       )}
     </>

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
-import { middleware } from "@/middleware";
+import { middleware, config } from "@/middleware";
 
 const SESSION_COOKIE = "qa_pilot_session";
 
@@ -39,5 +39,40 @@ describe("middleware", () => {
     const res = middleware(makeRequest("/", { withCookie: true }));
     expect(res.status).not.toBe(307);
     expect(res.headers.get("location")).toBeNull();
+  });
+});
+
+/**
+ * The matcher decides which requests reach the function at all, so it is the only place a
+ * static asset can be excluded. It is tested separately because middleware() itself never
+ * sees the matcher - Next applies it upstream.
+ */
+describe("middleware matcher", () => {
+  const pattern = new RegExp(`^${config.matcher[0]}$`);
+
+  it.each([
+    "/",
+    "/runs/new",
+    "/runs/abc123/cases",
+    "/login",
+  ])("runs on the app route %s", (path) => {
+    expect(pattern.test(path)).toBe(true);
+  });
+
+  it.each([
+    "/_next/static/chunk.js",
+    "/_next/image",
+    "/favicon.ico",
+    // Served as routes rather than from /public, so they only escape the redirect by
+    // being named here - and the sign-in screen is exactly where a signed-out browser
+    // asks for them.
+    "/icon.svg",
+    "/apple-icon.png",
+    // The login page's own background lives here, so gating it behind the login redirect
+    // means the sign-in screen can never render its wallpaper.
+    "/wallpapers/chromatic_dark_1.png",
+    "/wallpapers/mono_dark_distortion_1.png",
+  ])("skips the static asset %s", (path) => {
+    expect(pattern.test(path)).toBe(false);
   });
 });

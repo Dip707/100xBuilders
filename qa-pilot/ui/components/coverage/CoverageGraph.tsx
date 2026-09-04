@@ -27,7 +27,7 @@ const NODE_X = TRUNK_X + 44;
 const WIDTH = NODE_X + NODE_W + 60;
 
 const STATUS_STROKE: Record<CaseStatus, string> = {
-  planned: "var(--color-line-strong)", running: "var(--color-accent)", passed: "var(--color-pass)", failed: "var(--color-fail)", blocked: "var(--color-flaky)",
+  planned: "var(--color-line-strong)", running: "var(--color-info)", passed: "var(--color-pass)", failed: "var(--color-fail)", blocked: "var(--color-flaky)",
 };
 const STATUS_GLYPH: Record<CaseStatus, string> = { planned: "◌", running: "⧗", passed: "✓", failed: "✕", blocked: "◑" };
 
@@ -98,7 +98,7 @@ export function CoverageGraph({ rows, coverage, onSelect, highlight }: { rows: C
   if (placed.length === 0) return <p className="p-8 text-center text-sm text-muted">The planner has not produced any flows yet.</p>;
 
   return (
-    <div className="overflow-auto rounded-card border border-line bg-[radial-gradient(var(--color-line)_1px,transparent_1px)] [background-size:18px_18px]">
+    <div className="overflow-auto rounded-card border border-line bg-app bg-[radial-gradient(var(--color-line)_1px,transparent_1px)] [background-size:20px_20px]">
       <svg width={WIDTH} height={height} role="img" aria-label="Test coverage graph" className="block font-sans">
         {placed.map(({ lane, top, h }) => {
           const caseY = top + h / 2 - CASE_H / 2 - 12;
@@ -112,13 +112,13 @@ export function CoverageGraph({ rows, coverage, onSelect, highlight }: { rows: C
           return (
             <g key={lane.useCase} id={`lane-${lane.useCase.replace(/\s+/g, "-").toLowerCase()}`}>
               <text x={LEFT} y={top - 6} fontSize={12} fill="var(--color-muted)">{lane.useCase}</text>
-              <rect x={LEFT - 16} y={top} width={WIDTH - LEFT * 2 + 16} height={h} rx={14} fill="var(--color-surface)" fillOpacity={0.6} stroke={isHighlighted ? "var(--color-accent)" : "var(--color-line)"} strokeWidth={isHighlighted ? 2 : 1} />
+              <rect x={LEFT - 16} y={top} width={WIDTH - LEFT * 2 + 16} height={h} rx={12} fill="var(--color-surface)" fillOpacity={0.75} stroke={isHighlighted ? "var(--color-fg)" : "var(--color-line)"} strokeWidth={isHighlighted ? 1.5 : 1} />
 
               {/* use-case node */}
-              <rect x={LEFT} y={caseY} width={CASE_W} height={CASE_H} rx={10} fill="var(--color-surface)" stroke="var(--color-line-strong)" />
-              <rect x={LEFT} y={caseY - 10} width={78} height={18} rx={4} fill="var(--color-accent-tint)" />
-              <text x={LEFT + 8} y={caseY + 3} fontSize={10} fontWeight={600} fill="var(--color-accent)">USE CASE</text>
-              <text x={LEFT + 14} y={caseY + 32} fontSize={14} fontWeight={600} fill="var(--color-fg)">⬡ {truncate(lane.useCase, 24)}</text>
+              <rect x={LEFT} y={caseY} width={CASE_W} height={CASE_H} rx={10} fill="var(--color-inset)" stroke="var(--color-line-strong)" />
+              <rect x={LEFT} y={caseY - 10} width={78} height={18} rx={4} fill="var(--color-raised)" stroke="var(--color-line)" />
+              <text x={LEFT + 8} y={caseY + 3} fontSize={9.5} fontWeight={500} letterSpacing="0.6" fill="var(--color-muted)">USE CASE</text>
+              <text x={LEFT + 14} y={caseY + 32} fontSize={13.5} fontWeight={500} fill="var(--color-fg)">{truncate(lane.useCase, 26)}</text>
               <text x={LEFT + 14} y={caseY + 54} fontSize={11} fill="var(--color-muted)">{lane.rows.length} {lane.rows.length === 1 ? "test" : "tests"}{lane.gaps.length ? ` · ${lane.gaps.length} ${lane.gaps.length === 1 ? "gap" : "gaps"}` : ""}</text>
 
               {/* trunk from the use case to every item */}
@@ -138,7 +138,7 @@ export function CoverageGraph({ rows, coverage, onSelect, highlight }: { rows: C
                   return (
                     <g key={row.id} onClick={() => onSelect(row.id)} className="cursor-pointer" role="button" aria-label={`${row.flow.title}, ${row.status}`}>
                       <path d={`M ${TRUNK_X} ${mid} H ${NODE_X}`} fill="none" stroke="var(--color-line-strong)" strokeWidth={1.5} />
-                      <rect x={NODE_X} y={ny} width={NODE_W} height={NODE_H} rx={10} fill="var(--color-surface)" stroke={stroke} strokeWidth={row.status === "planned" ? 1 : 1.5} />
+                      <rect x={NODE_X} y={ny} width={NODE_W} height={NODE_H} rx={8} fill="var(--color-surface)" stroke={stroke} strokeOpacity={row.status === "planned" ? 0.5 : 0.85} strokeWidth={1} />
                       <circle cx={NODE_X + 20} cy={mid} r={9} fill={stroke} fillOpacity={row.status === "planned" ? 0.25 : 0.15} />
                       <text x={NODE_X + 20} y={mid + 4} fontSize={11} textAnchor="middle" fill={stroke}>{STATUS_GLYPH[row.status]}</text>
                       <text x={NODE_X + 38} y={mid - 3} fontSize={12} fontWeight={500} fill="var(--color-fg)">{truncate(row.flow.title, 40)}</text>
@@ -150,7 +150,7 @@ export function CoverageGraph({ rows, coverage, onSelect, highlight }: { rows: C
                   <g key={`gap-${i}`}>
                     <title>{item.gap.suggest}</title>
                     <path d={`M ${TRUNK_X} ${mid} H ${NODE_X}`} fill="none" stroke="var(--color-flaky)" strokeWidth={1.5} strokeDasharray="4 3" />
-                    <rect x={NODE_X} y={ny} width={NODE_W} height={NODE_H} rx={10} fill="var(--color-flaky)" fillOpacity={0.06} stroke="var(--color-flaky)" strokeDasharray="5 4" />
+                    <rect x={NODE_X} y={ny} width={NODE_W} height={NODE_H} rx={8} fill="var(--color-flaky)" fillOpacity={0.07} stroke="var(--color-flaky)" strokeOpacity={0.5} strokeDasharray="5 4" />
                     <text x={NODE_X + 14} y={mid - 3} fontSize={12} fontWeight={500} fill="var(--color-flaky)">GAP · {truncate(item.gap.text, 36)}</text>
                     <text x={NODE_X + 14} y={mid + 12} fontSize={10} fill="var(--color-muted)">{truncate(item.gap.suggest, 52)}</text>
                   </g>
@@ -159,10 +159,10 @@ export function CoverageGraph({ rows, coverage, onSelect, highlight }: { rows: C
 
               {/* lane badges */}
               <g transform={`translate(${WIDTH / 2 - 90}, ${top + h - 26})`}>
-                <rect x={0} y={0} width={80} height={20} rx={10} fill="var(--color-surface)" stroke="var(--color-line-strong)" />
-                <text x={40} y={14} fontSize={11} textAnchor="middle" fill="var(--color-fg)">⚗ {lane.rows.length} tests</text>
-                <rect x={90} y={0} width={90} height={20} rx={10} fill="var(--color-surface)" stroke={lane.gaps.length ? "var(--color-flaky)" : "var(--color-line-strong)"} />
-                <text x={135} y={14} fontSize={11} textAnchor="middle" fill={lane.gaps.length ? "var(--color-flaky)" : "var(--color-fg)"}>◔ {lane.gaps.length} gaps{lane.risk ? ` · ${lane.risk} risk` : ""}</text>
+                <rect x={0} y={0} width={80} height={20} rx={6} fill="var(--color-inset)" stroke="var(--color-line)" />
+                <text x={40} y={14} fontSize={10.5} textAnchor="middle" fill="var(--color-muted)">{lane.rows.length} tests</text>
+                <rect x={90} y={0} width={90} height={20} rx={6} fill={lane.gaps.length ? "var(--color-flaky)" : "var(--color-inset)"} fillOpacity={lane.gaps.length ? 0.12 : 1} stroke={lane.gaps.length ? "var(--color-flaky)" : "var(--color-line)"} strokeOpacity={lane.gaps.length ? 0.4 : 1} />
+                <text x={135} y={14} fontSize={10.5} textAnchor="middle" fill={lane.gaps.length ? "var(--color-flaky)" : "var(--color-muted)"}>{lane.gaps.length} gaps{lane.risk ? ` · ${lane.risk} risk` : ""}</text>
               </g>
             </g>
           );

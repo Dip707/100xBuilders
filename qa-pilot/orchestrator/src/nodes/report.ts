@@ -1,6 +1,7 @@
 import { marked } from "marked";
 import type { RunState, RunUpdate } from "../state.js";
 import { writeOutput } from "../output.js";
+import { writeSuite } from "../suite/bundle.js";
 import type { NodeDeps } from "./deps.js";
 
 // Escapes untrusted text before it is interpolated into markdown that will
@@ -40,7 +41,7 @@ export function renderReport(state: RunState): string {
   md.push("", "## Results", "", row(["Test", "Title", "Status", "Classification"]), row(["---", "---", "---", "---"]));
   for (const t of tests) {
     const c = cls.get(t.id);
-    md.push(row([t.id, t.title, t.status, c ? `${c.class} (${c.confidence})` : t.status === "passed" ? "pass" : "-"]));
+    md.push(row([t.id, t.title, t.status, c ? `${c.action === "healed" ? "healed" : c.class} (${c.confidence})` : t.status === "passed" ? "pass" : "-"]));
   }
   md.push("", "## Heals", "");
   if (!state.healLog.length) md.push("No heals were needed.");
@@ -77,6 +78,14 @@ export async function reportNode(state: RunState, deps: NodeDeps): Promise<RunUp
   writeOutput(state.runId, "report.md", md);
   writeOutput(state.runId, "report.html", `<!doctype html><meta charset="utf-8"><title>qa-pilot report</title><style>${CSS}</style>${await marked.parse(md)}`);
   writeOutput(state.runId, "defects.json", state.defects);
+  // The suite an engineer takes away. Never allowed to cost the run its report, so a failure
+  // here is reported and swallowed.
+  try {
+    const files = writeSuite(state);
+    deps.bus.log("reporter", `suite bundled: ${files.length} files under suite/`);
+  } catch (err) {
+    deps.bus.emit({ type: "error", node: "report", message: `could not bundle the suite: ${(err as Error).message}` });
+  }
   deps.bus.emit({ type: "node_end", node: "report" });
   deps.bus.emit({ type: "done", message: state.partial ? "partial" : "complete", data: { defects: state.defects.length, passed: state.results?.tests.filter((t) => t.status === "passed").length ?? 0, total: state.results?.tests.length ?? 0 } });
   return {};

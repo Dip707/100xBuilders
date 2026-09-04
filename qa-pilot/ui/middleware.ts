@@ -34,4 +34,17 @@ export function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+/*
+ * `wallpapers` is excluded alongside Next's own static paths because the sign-in screen's
+ * background lives there: anything under /public that a signed-out page renders has to be
+ * reachable without a session, or the redirect fires on the asset and the login screen
+ * loads without the one image it needs.
+ *
+ * The app icons need the same exemption for the same reason, and they are easy to miss:
+ * `app/icon.svg` and `app/apple-icon.png` are served by Next as routes, not as files under
+ * /public, so without them listed here the browser asks for the tab icon on the sign-in
+ * screen and gets a 307 to /login.
+ */
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg|apple-icon.png|wallpapers/).*)"],
+};

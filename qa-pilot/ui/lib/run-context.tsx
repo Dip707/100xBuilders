@@ -5,6 +5,7 @@ import { getRun, type ArtifactManifest, type RunRecord } from "./api";
 import { useRunEvents, type RunEvent } from "./events";
 import { usePlan } from "./hooks";
 import { caseRows, isAwaitingReview, isDoneEvents, type CaseRow, type Flow } from "./cases";
+import { stages, type Stage } from "./stages";
 
 export type RunContextValue = {
   runId: string;
@@ -15,6 +16,8 @@ export type RunContextValue = {
   plan: Flow[] | null;
   rows: CaseRow[];
   awaitingReview: boolean;
+  /** The four workspace stages with their current status, shared by the rail and every screen. */
+  stages: Stage[];
   /** Re-reads the run record and manifest, for example after a rerun or once the run finishes. */
   refresh: () => void;
   /**
@@ -30,23 +33,38 @@ export type RunContextValue = {
 const Ctx = createContext<RunContextValue | null>(null);
 
 /**
- * One subscription per run, shared by every screen under /runs/[id]. The SSE stream, the
- * plan file and the derived test rows live here so that switching between Test Runs, Test
- * Cases and Coverage neither reconnects nor recomputes, and so the detail drawer can be
- * opened from any of them through the `test` query parameter.
+ * One subscription per run, mounted around the whole app shell.
+ *
+ * It sits above the sidebar rather than inside the run routes because the rail badges each
+ * stage from the same derivation the screens use, and two subscriptions would eventually
+ * disagree about where the run had got to. Keeping it here also means moving between
+ * Sources, Coverage, Test Cases and Test Runs neither reconnects the stream nor recomputes
+ * the plan, and the detail drawer can be opened from any of them via the `test` parameter.
+ *
+ * `runId` is null on the screens that are not a run (the overview, the start form); the
+ * context is then null too, so `useRun` still fails loudly anywhere it is used by mistake.
  */
-export function RunProvider({ runId, children }: { runId: string; children: React.ReactNode }) {
+export function RunProvider({ runId, children }: { runId: string | null; children: React.ReactNode }) {
   const [record, setRecord] = useState<{ run: RunRecord; manifest: ArtifactManifest } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [local, setLocal] = useState<RunEvent[]>([]);
+  const [tracked, setTracked] = useState(runId);
+  if (tracked !== runId) {
+    setTracked(runId);
+    setRecord(null);
+    setError(null);
+    setLocal([]);
+  }
   const streamed = useRunEvents(runId);
   const events = useMemo(() => (local.length ? [...streamed, ...local] : streamed), [streamed, local]);
   const plan = usePlan(runId, events);
+  const stageList = useMemo(() => stages(events, record?.run.status), [events, record]);
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
 
   const refresh = useCallback(() => {
+    if (!runId) return;
     getRun(runId).then((r) => { setRecord(r); setError(null); }).catch((err) => setError((err as Error).message));
   }, [runId]);
 
@@ -70,14 +88,25 @@ export function RunProvider({ runId, children }: { runId: string; children: Reac
   }, [params, pathname, router]);
 
   const value = useMemo<RunContextValue>(() => ({
-    runId, run: record?.run ?? null, manifest: record?.manifest ?? null, error, events, plan, rows, awaitingReview, refresh, pushEvent, selectedTest, selectTest,
-  }), [runId, record, error, events, plan, rows, awaitingReview, refresh, pushEvent, selectedTest, selectTest]);
+    runId: runId ?? "", run: record?.run ?? null, manifest: record?.manifest ?? null, error, events, plan, rows, awaitingReview, stages: stageList, refresh, pushEvent, selectedTest, selectTest,
+  }), [runId, record, error, events, plan, rows, awaitingReview, stageList, refresh, pushEvent, selectedTest, selectTest]);
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={runId ? value : null}>{children}</Ctx.Provider>;
 }
 
 export function useRun(): RunContextValue {
-  const v = useContext(Ctx);
+  const v = useRunOrNull();
   if (!v) throw new Error("useRun must be used under a RunProvider");
   return v;
+}
+
+/**
+ * The run in scope, or null when there is none.
+ *
+ * The provider now wraps the whole app shell so the sidebar can badge each stage from the
+ * same subscription the screens read, and the shell also renders on pages that are not a
+ * run at all (the overview, the start form). Those get null rather than a thrown error.
+ */
+export function useRunOrNull(): RunContextValue | null {
+  return useContext(Ctx);
 }

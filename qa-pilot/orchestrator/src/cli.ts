@@ -15,14 +15,14 @@ const { positionals, values } = parseArgs({
     username: { type: "string" },
     password: { type: "string" },
     "max-flows": { type: "string" },
-    headless: { type: "boolean", default: false },
+    headed: { type: "boolean", default: false },
     "run-id": { type: "string" },
   },
 });
 
 const [cmd, url] = positionals;
 if (cmd !== "run" || !url) {
-  console.error('usage: qa-pilot run <url> [--intent "..."] [--prd file.md] [--username u --password p] [--max-flows 12] [--headless]');
+  console.error('usage: qa-pilot run <url> [--intent "..."] [--prd file.md] [--username u --password p] [--max-flows 12] [--headed]');
   process.exit(1);
 }
 
@@ -39,21 +39,31 @@ bus.subscribe((e) => {
 const store = await defaultStore();
 const localUser = await ensureLocalUser(store);
 
-const { done } = await startRun(
-  {
-    runId,
-    userId: localUser.id,
-    url,
-    intent: values.intent,
-    prdText: values.prd ? readFileSync(values.prd, "utf8") : undefined,
-    credentials: values.username && values.password ? { username: values.username, password: values.password } : undefined,
-    maxFlows: values["max-flows"] ? Number(values["max-flows"]) : 12,
-    // RunInputSchema fills maxLlmCalls/maxMinutes defaults at parse time; the
-    // static RunInput type resolves those as required, so cast the empty input.
-    budget: {} as RunInput["budget"],
-  },
-  { headless: values.headless || process.env.QA_PILOT_HEADLESS === "1", store },
-);
+let started;
+try {
+  started = await startRun(
+    {
+      runId,
+      userId: localUser.id,
+      url,
+      intent: values.intent,
+      prdText: values.prd ? readFileSync(values.prd, "utf8") : undefined,
+      credentials: values.username && values.password ? { username: values.username, password: values.password } : undefined,
+      maxFlows: values["max-flows"] ? Number(values["max-flows"]) : 12,
+      // RunInputSchema fills maxLlmCalls/maxMinutes defaults at parse time; the
+      // static RunInput type resolves those as required, so cast the empty input.
+      budget: {} as RunInput["budget"],
+    },
+    // Headless unless --headed is asked for: a run fans out a browser per flow, and the
+    // live view is the screencast on the run screen, not a wall of Chromium windows.
+    { headless: values.headed ? false : undefined, store },
+  );
+} catch (err) {
+  // A reused --run-id is the common case here, and its message says what to do about it.
+  console.error(`[error] could not start the run: ${(err as Error).message}`);
+  process.exit(1);
+}
+const { done } = started;
 let final;
 try {
   final = await done;
@@ -64,4 +74,5 @@ try {
 const passed = final.results?.tests.filter((t) => t.status === "passed").length ?? 0;
 console.log(`\ndone. ${passed}/${final.results?.tests.length ?? 0} passed, ${final.defects.length} defects, ${final.healLog.filter((h) => h.accepted).length} heals.`);
 console.log(`report: ${outputDir(runId)}report.html`);
+console.log(`suite:  ${outputDir(runId)}suite/  (standalone Playwright project: npm install && npm test)`);
 process.exit(0);

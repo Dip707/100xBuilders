@@ -48,13 +48,26 @@ export const SiteMapSchema = z.object({
 });
 export type SiteMap = z.infer<typeof SiteMapSchema>;
 
-export const ExpectationSchema = z.object({
-  type: z.enum(["visible", "not_visible", "text_contains", "url_contains", "url_stays", "value_equals"]),
-  role: z.string().optional(),
-  name: z.string().optional(),
-  text_contains: z.string().optional(),
-  value: z.string().optional(),
-});
+/** What a URL expectation may match against: a path, query string or hash route, never prose or stray punctuation. */
+const URL_FRAGMENT = /^[A-Za-z0-9/._~%?=&#-]+$/;
+export const ExpectationSchema = z
+  .object({
+    type: z.enum(["visible", "not_visible", "text_contains", "url_contains", "url_stays", "value_equals"]),
+    role: z.string().optional(),
+    name: z.string().optional(),
+    text_contains: z.string().optional(),
+    value: z.string().optional(),
+  })
+  .refine((e) => !e.type.startsWith("url") || URL_FRAGMENT.test(e.value ?? e.text_contains ?? ""), {
+    message: "a url_contains or url_stays expectation needs a value that is a URL path or fragment, such as /orders or /#/faq",
+    path: ["value"],
+  })
+  // A role alone ("an alert is visible") is satisfied by any alert, including the app's own
+  // error message, so an expectation has to say which element or which text it looks for.
+  .refine((e) => !["visible", "not_visible", "text_contains"].includes(e.type) || Boolean(e.name || e.text_contains), {
+    message: "a visible, not_visible or text_contains expectation needs a name (the element's accessible name) or text_contains (the text it must show)",
+    path: ["text_contains"],
+  });
 export type Expectation = z.infer<typeof ExpectationSchema>;
 
 export const FlowCategory = z.enum(["happy", "negative", "edge", "error_state", "authz"]);
@@ -97,6 +110,7 @@ export const TestResultSchema = z.object({
   error: z.string().optional(),
   errorLine: z.number().optional(),
   failingStep: z.number().optional(),   // index into flow.steps, derived from errorLine
+  failingExpect: z.number().optional(), // index into flow.expected when the failure is on an expect line
   network: z.array(NetworkEntrySchema).default([]),
   consoleErrors: z.array(z.string()).default([]),
   pageErrors: z.array(z.string()).default([]),
@@ -114,7 +128,7 @@ export const ClassificationSchema = z.object({
   class: z.enum(["script", "defect", "flaky", "env", "needs_human"]),
   confidence: z.number().min(0).max(1),
   evidence: z.array(z.string()),
-  action: z.enum(["heal", "escalate", "rerun", "needs_human", "stop"]),
+  action: z.enum(["heal", "escalate", "rerun", "needs_human", "stop", "healed"]),
   rationale: z.string().optional(),
 });
 export type Classification = z.infer<typeof ClassificationSchema>;
@@ -135,7 +149,8 @@ export type Defect = z.infer<typeof DefectSchema>;
 export const HealRecordSchema = z.object({
   test: z.string(),
   attempt: z.number(),
-  step: z.number(),
+  step: z.number().optional(),        // index into flow.steps for a step heal
+  expectation: z.number().optional(), // index into flow.expected for an assertion re-target
   before: z.string(),
   after: z.string(),
   reason: z.string(),
@@ -192,6 +207,9 @@ export const RunStateAnnotation = Annotation.Root({
   planIterations: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
   testFiles: Annotation<string[]>(append<string>()),
   unresolvedFlows: Annotation<string[]>(append<string>()),
+  // Expectations the generator re-targeted after checking them live, by flow id. The plan
+  // keeps what the planner wrote; every later node verifies against what the spec asserts.
+  expectations: Annotation<Record<string, Expectation[]>>({ reducer: (a, b) => ({ ...a, ...b }), default: () => ({}) }),
   currentFlow: Annotation<Flow | undefined>(),           // Send() payload for generateFlow
   testsToRun: Annotation<string[] | undefined>(),         // undefined = all
   results: Annotation<RunResults | undefined>(),
@@ -226,6 +244,7 @@ export function initialState(input: { runId: string; url: string } & Partial<Run
     planIterations: 0,
     testFiles: [],
     unresolvedFlows: [],
+    expectations: {},
     currentFlow: undefined,
     testsToRun: undefined,
     results: undefined,
@@ -256,6 +275,11 @@ export const StartRunInputSchema = RunInputSchema.extend({ userId: z.string().mi
 export type StartRunInput = z.input<typeof StartRunInputSchema>;
 
 /** Resolved on every call so tests can point QA_PILOT_OUTPUT at a temp dir. Always ends with "/". */
+/** A flow's expectations as the generated spec asserts them: the planner's, unless the generator re-targeted them. */
+export function effectiveExpectations(state: Pick<RunState, "expectations">, flow: Flow): Expectation[] {
+  return state.expectations[flow.id] ?? flow.expected;
+}
+
 export function outputDir(runId: string): string {
   const root = process.env.QA_PILOT_OUTPUT ?? new URL("../../output/", import.meta.url).pathname;
   return `${root.endsWith("/") ? root : root + "/"}${runId}/`;

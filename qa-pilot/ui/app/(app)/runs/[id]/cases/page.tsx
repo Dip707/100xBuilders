@@ -2,17 +2,20 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { Button, Card, Spinner } from "@/components/ui";
+import { Button, Card, Icon, Spinner, Wallpaper } from "@/components/ui";
 import { CaseTable } from "@/components/cases/CaseTable";
 import { StatusChips } from "@/components/cases/StatusChips";
 import { SearchBox } from "@/components/cases/SearchBox";
+import { NextStageCta } from "@/components/stage/NextStageCta";
+import { StageWaiting } from "@/components/stage/StageWaiting";
 import { rerunTest } from "@/lib/api";
 import { useRun } from "@/lib/run-context";
 import { filterRows, statusCounts, type CaseStatus, type TestResultData } from "@/lib/cases";
 
 /** The reference's Test Cases screen: every planned test, grouped by use case, with its latest status. */
 export default function CasesPage() {
-  const { runId, run, error, rows, plan, selectedTest, selectTest, pushEvent, refresh } = useRun();
+  const { runId, run, error, rows, plan, selectedTest, selectTest, pushEvent, refresh, stages } = useRun();
+  const stage = stages.find((s) => s.id === "cases")!;
   const router = useRouter();
   const [status, setStatus] = useState<CaseStatus | "all">("all");
   const [query, setQuery] = useState("");
@@ -45,28 +48,44 @@ export default function CasesPage() {
     refresh();
   }
 
-  if (error) return (<><PageHeader crumbs={crumbs} /><p role="alert" className="m-8 rounded-input bg-fail/10 px-3 py-2 text-sm text-fail">{error}</p></>);
+  if (error) {
+    return (
+      <>
+        <PageHeader crumbs={crumbs} />
+        <p role="alert" className="m-6 flex items-center gap-2 rounded-input border border-fail/25 bg-fail/10 px-3 py-2 text-[13px] text-fail">
+          <Icon name="alert" size={14} /> {error}
+        </p>
+      </>
+    );
+  }
+
+  if (stage.status === "not_started" || stage.status === "not_run") {
+    return (<><PageHeader crumbs={crumbs} title="Test cases" /><StageWaiting id="cases" /></>);
+  }
 
   return (
     <>
+      <Wallpaper name="drift" />
       <PageHeader crumbs={crumbs} title="Test cases" subtitle="All test cases, grouped by use case. Open one to see its steps, the browser recording and the generated code." />
-      <div className="space-y-5 px-8 pb-10 pt-4">
+      <div className="space-y-4 px-6 pb-10 pt-5">
         <StatusChips counts={counts} active={status} onChange={setStatus} />
         <Card padded={false}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div className="flex items-center gap-3">
               <SearchBox value={query} onChange={setQuery} />
-              <span className="text-[13px] text-muted">{shown.length} of {rows.length}</span>
+              <span className="font-mono text-[12.5px] text-muted">{shown.length} of {rows.length}</span>
             </div>
             <div className="flex items-center gap-2">
-              {rerunError && <p role="alert" className="text-[13px] text-fail">{rerunError}</p>}
-              <Button variant="outline" size="sm" onClick={() => router.push(`/runs/${encodeURIComponent(runId)}/coverage`)}>⌘ View coverage</Button>
+              {rerunError && <p role="alert" className="text-[12.5px] text-fail">{rerunError}</p>}
+              <Button variant="outline" size="sm" onClick={() => router.push(`/runs/${encodeURIComponent(runId)}/coverage`)}>
+                <Icon name="target" size={13} /> View coverage
+              </Button>
               <Button size="sm" onClick={runAll} disabled={!finished || rerunAll !== null || rerunnable.length === 0} title={finished ? undefined : "Available once the run has finished"}>
-                {rerunAll ? <><Spinner /> {rerunAll.done}/{rerunAll.total}</> : "▷ Run all"}
+                {rerunAll ? <><Spinner /> {rerunAll.done}/{rerunAll.total}</> : <><Icon name="play" size={13} /> Run all</>}
               </Button>
             </div>
           </div>
-          {plan === null ? <div className="flex justify-center py-14"><Spinner size={22} /></div> : (
+          {plan === null ? <div className="flex justify-center py-16"><Spinner size={20} /></div> : (
             <CaseTable
               rows={shown} allRows={rows} mode="cases" selected={selectedTest} onSelect={selectTest}
               onViewCoverage={(useCase) => router.push(`/runs/${encodeURIComponent(runId)}/coverage?lane=${encodeURIComponent(useCase)}`)}
@@ -74,6 +93,8 @@ export default function CasesPage() {
             />
           )}
         </Card>
+
+        <NextStageCta from="cases" />
       </div>
     </>
   );

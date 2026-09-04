@@ -17,7 +17,7 @@ export function PlanPanel({ runId, available }: { runId: string; available: bool
     return () => { cancelled = true; };
   }, [runId, available]);
 
-  if (!available) return <p className="p-4 text-sm text-muted">The planner has not written a plan yet.</p>;
+  if (!available) return <p className="p-4 text-[13px] text-muted">The planner has not written a plan yet.</p>;
   if (text === null) return <div className="flex justify-center p-8"><Spinner /></div>;
-  return <pre className="h-full overflow-auto rounded-box bg-inset p-4 font-mono text-xs leading-relaxed text-fg whitespace-pre-wrap">{text}</pre>;
+  return <pre className="h-full overflow-auto whitespace-pre-wrap rounded-box border border-line bg-inset p-4 font-mono text-[11.5px] leading-[1.7] text-body">{text}</pre>;
 }

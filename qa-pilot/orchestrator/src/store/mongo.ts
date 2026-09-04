@@ -1,10 +1,11 @@
 import { MongoClient, type Collection, type Db } from "mongodb";
 import { randomUUID } from "node:crypto";
-import { EmailTakenError, normaliseEmail, withDerivedStatus, type RunRecord, type Store, type User } from "./types.js";
+import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type RunRecord, type Store, type User } from "./types.js";
 
 type UserDoc = { _id: string; email: string; passwordHash: string; createdAt: string };
 type SessionDoc = { _id: string; userId: string; createdAt: string; expiresAt: Date };
 type RunDoc = Omit<RunRecord, "id"> & { _id: string };
+type ChatDoc = Omit<ChatRecord, "id"> & { _id: string };
 
 const DUPLICATE_KEY = 11000;
 /** Case-insensitive comparison for the unique email index and for lookups. */
@@ -34,6 +35,7 @@ async function ensureIndexes(db: Db): Promise<void> {
   // expired sessions instead of application code.
   await db.collection<SessionDoc>("sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: "session_ttl" });
   await db.collection<RunDoc>("runs").createIndex({ userId: 1, startedAt: -1 }, { name: "runs_by_user_recent" });
+  await db.collection<ChatDoc>("chats").createIndex({ userId: 1, updatedAt: -1 }, { name: "chats_by_user_recent" });
 }
 
 function toRecord(doc: RunDoc): RunRecord {
@@ -53,6 +55,7 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
   const users: Collection<UserDoc> = db.collection("users");
   const sessions: Collection<SessionDoc> = db.collection("sessions");
   const runs: Collection<RunDoc> = db.collection("runs");
+  const chats: Collection<ChatDoc> = db.collection("chats");
 
   return {
     async createUser(email, passwordHash) {
@@ -91,7 +94,12 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
 
     async insertRun(rec) {
       const { id, ...rest } = rec;
-      await runs.insertOne({ _id: id, ...rest });
+      try {
+        await runs.insertOne({ _id: id, ...rest });
+      } catch (err) {
+        if ((err as { code?: number }).code === DUPLICATE_KEY) throw new RunIdTakenError(id);
+        throw err;
+      }
     },
     async updateRun(id, patch) {
       const { id: _ignored, ...fields } = patch as Partial<RunRecord> & { id?: string };
@@ -108,6 +116,46 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
     async listRuns(userId, limit = 100) {
       const docs = await runs.find({ userId }).sort({ startedAt: -1 }).limit(limit).toArray();
       return docs.map(toRecord);
+    },
+
+    async insertChat(rec) {
+      const { id, ...rest } = rec;
+      await chats.insertOne({ _id: id, ...rest });
+    },
+    async getChat(id) {
+      const doc = await chats.findOne({ _id: id });
+      if (!doc) return null;
+      const { _id, ...rest } = doc;
+      return { id: _id, ...rest };
+    },
+    async listChats(userId, limit = 50) {
+      // draft is projected in only for its url, which the dropdown shows under the title;
+      // the transcript never leaves the database for a list request.
+      const docs = await chats
+        .find({ userId }, { projection: { messages: 0 } })
+        .sort({ updatedAt: -1 })
+        .limit(limit)
+        .toArray();
+      return docs.map(({ _id, draft, ...rest }) => {
+        const s: ChatSummary = { id: _id, ...(rest as Omit<ChatSummary, "id">) };
+        if (draft?.url) s.url = draft.url;
+        return s;
+      });
+    },
+    async appendChatTurn(id, messages, patch) {
+      const set: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+      if (patch.draft) set.draft = patch.draft;
+      if (patch.title) set.title = patch.title;
+      if (patch.runId) set.runId = patch.runId;
+      // $each with $slice: -CAP keeps the newest CAP messages in the same write that appends,
+      // so the cap is enforced by the database rather than by a read-modify-write race.
+      await chats.updateOne({ _id: id }, {
+        $set: set,
+        ...(messages.length > 0 ? { $push: { messages: { $each: messages, $slice: -CHAT_MESSAGE_CAP } } } : {}),
+      });
+    },
+    async deleteChat(id) {
+      await chats.deleteOne({ _id: id });
     },
 
     async close() {

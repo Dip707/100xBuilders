@@ -1,60 +1,225 @@
 @import "tailwindcss";
 
 /*
- * One place for every colour and radius in the app. Before this file existed the
- * components carried literals like neutral-950 and amber-500 inline, which is why the
- * dark and light halves of the old UI never agreed with each other.
+ * One place for every colour and radius in the app.
+ *
+ * The palette is Raycast's: a near-black canvas with a four-step surface ladder
+ * (canvas -> surface -> inset -> raised), hairline borders, and no drop shadows anywhere -
+ * depth is built entirely from the ladder, one notch lighter reading as one step closer.
+ * White is the brand action colour; saturated hues are reserved for status.
+ *
+ * Dark is the default. `[data-theme="light"]` below redefines the same names with an
+ * inverted ladder, so every component is written once against the semantic token and both
+ * themes fall out of it.
  */
 @theme {
-  --color-app: #f7f7f5;
-  --color-surface: #ffffff;
-  --color-inset: #f1f1ee;
-  --color-console: #1c1c19;
+  /* Surface ladder. */
+  --color-app: #07080a;
+  --color-surface: #0d0d0d;
+  --color-inset: #101111;
+  --color-raised: #16171a;
+  /* Terminals and code stay dark in both themes; a light log pane reads as a bug. */
+  --color-console: #08090b;
 
-  --color-line: #e7e6e2;
-  --color-line-strong: #d8d7d2;
+  --color-line: #242728;
+  --color-line-strong: rgba(255, 255, 255, 0.16);
 
-  --color-fg: #1b1b19;
-  --color-muted: #85857d;
-  --color-subtle: #a8a8a0;
-
-  --color-accent: #2f6b4f;
-  --color-accent-hover: #275a43;
-  --color-accent-tint: #e8f3ec;
-  --color-accent-fg: #ffffff;
+  /* Text ladder: ink -> body -> mute -> ash. */
+  --color-fg: #f4f4f6;
+  --color-body: #cdcdcd;
+  --color-muted: #9c9c9d;
+  --color-subtle: #6a6b6c;
 
   /*
-   * Status colours. Brand green and "passed" green are deliberately different hues, but
-   * nothing in the UI may rely on hue alone: every status renders an icon and a word.
+   * White is the primary action. Raycast has no second brand colour: every CTA is the
+   * same white pill, which is what keeps the canvas tonally pure.
    */
-  --color-pass: #16a34a;
-  --color-fail: #c2413a;
-  --color-flaky: #b5761f;
-  --color-defect: #a1201c;
-  --color-env: #6b6b63;
-  --color-human: #6d4aa8;
+  --color-accent: #ffffff;
+  --color-accent-hover: #e8e8e8;
+  --color-accent-fg: #000000;
+  /* The fill behind a selected row or an active nav item - one notch, not a colour. */
+  --color-selected: rgba(255, 255, 255, 0.07);
 
-  --radius-input: 0.5rem;
-  --radius-box: 0.75rem;
-  --radius-card: 1rem;
+  /*
+   * Status colours, from Raycast's four saturated accents. Nothing in the UI may rely on
+   * hue alone: every status renders an icon and a word alongside its colour.
+   */
+  --color-pass: #59d499;
+  --color-fail: #ff6161;
+  --color-flaky: #ffc533;
+  --color-info: #57c1ff;
+  --color-defect: #ff5252;
+  --color-env: #9c9c9d;
+  --color-human: #b08cff;
 
-  --font-sans: var(--font-geist-sans);
+  /* A tight 6-12px ladder, nested smallest-inside-largest. */
+  --radius-chip: 6px;
+  --radius-input: 8px;
+  --radius-box: 10px;
+  --radius-card: 12px;
+
+  --font-sans: var(--font-inter);
   --font-mono: var(--font-geist-mono);
 }
 
-/*
- * The old file set `font-family: Arial, Helvetica, sans-serif` here, which overrode the
- * Geist variables layout.tsx goes to the trouble of loading. The app was never actually
- * rendering in the font it downloaded.
- */
-body {
-  background: var(--color-app);
-  color: var(--color-fg);
-  font-family: var(--font-sans), system-ui, sans-serif;
+[data-theme="light"] {
+  --color-app: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-inset: #f1f1f3;
+  --color-raised: #e9e9ec;
+  --color-console: #08090b;
+
+  --color-line: #e4e4e7;
+  --color-line-strong: rgba(0, 0, 0, 0.14);
+
+  --color-fg: #131316;
+  --color-body: #3f3f46;
+  --color-muted: #71717a;
+  --color-subtle: #a1a1aa;
+
+  --color-accent: #18191a;
+  --color-accent-hover: #000000;
+  --color-accent-fg: #ffffff;
+  --color-selected: rgba(0, 0, 0, 0.055);
+
+  /* The same hues, darkened until they carry their weight against white. */
+  --color-pass: #17915c;
+  --color-fail: #d93a3a;
+  --color-flaky: #a86a12;
+  --color-info: #0b7ec4;
+  --color-defect: #c2282e;
+  --color-env: #71717a;
+  --color-human: #7c3aed;
 }
 
-/* A single visible focus treatment, so keyboard navigation is never invisible. */
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+/*
+ * These belong in `base` rather than at the top level. Tailwind's utilities live in the
+ * `utilities` layer, and an unlayered rule beats every layered one no matter how specific
+ * the utility is - so an unlayered `:focus-visible` silently overrides every
+ * `focus:outline-none` in the app, which is how the always-focused command-palette input
+ * ended up wearing a permanent white ring.
+ */
+@layer base {
+  /*
+   * Inter with ss03 is the signature: the stylistic set swaps in the single-storey `g`.
+   * Without the feature flag the type renders as plain Inter and loses the voice entirely.
+   */
+  body {
+    background: var(--color-app);
+    color: var(--color-body);
+    font-family: var(--font-sans), system-ui, sans-serif;
+    font-feature-settings: "calt", "kern", "liga", "ss03";
+  }
+
+  /* A single visible focus treatment, so keyboard navigation is never invisible. */
+  :focus-visible {
+    outline: 2px solid var(--color-fg);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Scrollbars, matched to the canvas. A default light scrollbar wrecks a dark pane. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+}
+
+@layer components {
+  /*
+   * The detail drawer's enter and exit. Keep the 280ms here in step with SLIDE_MS in
+   * TestDetail.tsx, which is how long the component defers the actual close.
+   *
+   * The enter comes from `@starting-style`: it gives the browser the off-screen state to
+   * animate *from* on the frame the panel is inserted, so a freshly mounted element still
+   * slides rather than appearing. The exit is what the deferred close buys - the element
+   * is still in the DOM with `data-open="false"` for the length of the transition.
+   *
+   * The easing is a decelerating curve rather than plain ease-out; over a full-height
+   * panel ease-out still reads as a jump.
+   */
+  .slide-over {
+    transition:
+      translate 280ms cubic-bezier(0.32, 0.72, 0, 1),
+      opacity 200ms ease;
+  }
+
+  .slide-over[data-open="false"] {
+    translate: 100% 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  @starting-style {
+    .slide-over[data-open="true"] {
+      translate: 100% 0;
+      opacity: 0;
+    }
+  }
+
+  .slide-over-scrim {
+    transition: opacity 280ms ease;
+  }
+
+  .slide-over-scrim[data-open="false"] {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  @starting-style {
+    .slide-over-scrim[data-open="true"] {
+      opacity: 0;
+    }
+  }
+
+  /*
+   * A wallpaper plate. The element names a dark and a light image as custom properties
+   * and this picks whichever matches the active theme - so a screen declares its imagery
+   * once and both themes are covered, rather than one image being dimmed into grey mud
+   * under the theme it was not drawn for.
+   */
+  .wallpaper-plate {
+    background-image: var(--wallpaper-dark);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  [data-theme="light"] .wallpaper-plate {
+    background-image: var(--wallpaper-light);
+  }
+}
+
+/*
+ * The keycap gradient. Raycast's only "depth" decoration: a faint vertical ramp that
+ * suggests a physical key face on an otherwise flat canvas.
+ */
+@utility keycap-face {
+  background-image: linear-gradient(to bottom, var(--color-raised), var(--color-surface));
+}
+
+/* The command palette's entrance - a short rise, not a bounce. */
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility animate-palette-in {
+  animation: palette-in 130ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

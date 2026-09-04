@@ -126,3 +126,71 @@ describe("makeDefect", () => {
     expect(defect.actual).toBe("500 Internal Server Error");
   });
 });
+
+describe("scoreSignals on expect-line failures", () => {
+  const strict = `Error: expect(locator).toBeVisible() failed\n\nLocator: getByRole('link', { name: 'Orders' })\nExpected: visible\nError: strict mode violation: getByRole('link', { name: 'Orders' }) resolved to 2 elements:\n    1) <a href="/orders">Orders</a> aka getByRole('link', { name: 'Orders', exact: true })`;
+  it("strict mode violation in an assertion is a script problem", () => {
+    const e: Evidence = { test: { ...base, error: strict }, flow, snapshotAtFailure: `- link "Orders"\n- link "View orders"`, controlPassed: null, sameLocatorFailures: 0 };
+    const { weights, evidence } = scoreSignals(e);
+    expect(weights.script).toBeGreaterThanOrEqual(0.5);
+    expect(weights.script).toBeGreaterThan(weights.defect);
+    expect(evidence.join(" ")).toMatch(/strict mode/);
+  });
+  it("assertion target not found but a near-twin of the same role exists leans script", () => {
+    const err = `Error: expect(locator).toBeVisible() failed\n\nLocator: getByRole('link', { name: 'Log out' })\nExpected: visible\nTimeout: 5000ms\nError: element(s) not found`;
+    const e: Evidence = { test: { ...base, error: err }, flow, snapshotAtFailure: `- link "Home"\n- link "Sign out"`, controlPassed: null, sameLocatorFailures: 0 };
+    const { weights, evidence } = scoreSignals(e);
+    expect(weights.script).toBeGreaterThan(weights.defect);
+    expect(evidence.join(" ")).toMatch(/near-twin link "Sign out"/);
+  });
+});
+
+describe("adjustConfidence", () => {
+  it("applies the reviewer's adjustment only in the mid band and keeps two decimals", async () => {
+    const { adjustConfidence } = await import("../src/nodes/classify.js");
+    expect(adjustConfidence(0.6, -0.05)).toBe(0.55);
+    expect(adjustConfidence(0.9, -0.1)).toBe(0.9);
+    expect(adjustConfidence(0.4, 0.1)).toBe(0.4);
+    expect(adjustConfidence(0.79, 0.1)).toBe(0.89);
+  });
+});
+
+describe("classifyNode bookkeeping", () => {
+  it("carries an already escalated test forward as a defect instead of re-analysing or re-ticketing it", async () => {
+    const { classifyNode } = await import("../src/nodes/classify.js");
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-classify-esc-")) + "/";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const failed: TestResult = { ...base, error: "expect(locator).toBeVisible() failed\nLocator: getByRole('link', { name: 'Log out' })\nError: element(s) not found" };
+    const state = {
+      ...initialState({ runId: "r", url: "http://127.0.0.1:1" }), plan: [flow],
+      results: { tests: [failed], at: "" },
+      classifications: [{ test: "checkout-002", class: "defect" as const, confidence: 0.6, evidence: ["x"], action: "escalate" as const }],
+      defects: [makeDefect({ ...initialState({ runId: "r", url: "http://127.0.0.1:1" }), plan: [flow], results: { tests: [failed], at: "" } }, "checkout-002", "boom", ["x"])],
+    };
+    const llm = new FakeLlmClient({});
+    const update = await classifyNode(state, { bus, llm, headless: true });
+    const c = (update.classifications as Classification[])[0];
+    expect(c.class).toBe("defect");
+    expect(c.action).toBe("escalate");
+    expect(c.evidence.join(" ")).toMatch(/already escalated/);
+    expect(update.defects).toEqual([]);
+    expect(llm.calls).toBe(0);
+  }, 60_000);
+
+  it("reports a test that passes after an accepted heal as healed, not flaky", async () => {
+    const { classifyNode } = await import("../src/nodes/classify.js");
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-classify-healed-")) + "/";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const state = {
+      ...initialState({ runId: "r", url: "http://127.0.0.1:1" }), plan: [flow],
+      results: { tests: [{ ...base, status: "passed" as const }], at: "" },
+      classifications: [{ test: "checkout-002", class: "script" as const, confidence: 0.8, evidence: [], action: "heal" as const }],
+      healLog: [{ test: "checkout-002", attempt: 1, step: 1, before: "a", after: "b", reason: "renamed", confidence: 0.9, accepted: true }],
+    };
+    const update = await classifyNode(state, { bus, llm: new FakeLlmClient({}), headless: true });
+    const c = (update.classifications as Classification[])[0];
+    expect(c.class).toBe("script");
+    expect(c.action).toBe("healed");
+    expect(c.evidence.join(" ")).toMatch(/passed after heal/);
+  }, 60_000);
+});

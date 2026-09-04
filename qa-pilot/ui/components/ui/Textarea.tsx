@@ -4,7 +4,7 @@ export function Textarea({ className = "", ...rest }: TextareaHTMLAttributes<HTM
   return (
     <textarea
       {...rest}
-      className={`w-full rounded-input border border-line-strong bg-surface px-3 py-2 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none ${className}`}
+      className={`w-full rounded-input border border-line bg-inset px-3 py-2 text-sm leading-relaxed text-fg placeholder:text-subtle focus:border-line-strong focus:outline-none ${className}`}
     />
   );
 }

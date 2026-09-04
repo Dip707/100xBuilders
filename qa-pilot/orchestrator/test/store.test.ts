@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { memoryStore } from "../src/store/memory.js";
-import { withDerivedStatus, STALE_HEARTBEAT_MS, EmailTakenError, type Store, type RunRecord } from "../src/store/types.js";
+import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, type Store, type RunRecord, type ChatRecord } from "../src/store/types.js";
 
 function runRec(over: Partial<RunRecord> = {}): RunRecord {
   return {
     id: "run-1", userId: "u1", url: "http://localhost:3005",
     hasPrd: false, status: "running", startedAt: new Date().toISOString(), ...over,
   };
+}
+
+function chatRec(over: Partial<ChatRecord> = {}): ChatRecord {
+  const now = new Date().toISOString();
+  return { id: "chat-1", userId: "u1", title: "New chat", createdAt: now, updatedAt: now, messages: [], draft: {}, ...over };
 }
 
 // The Mongo pass runs only when a URL is configured. It forces a database name ending in
@@ -89,6 +94,74 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     const listed = await store.listRuns("u1");
     expect(listed.find((r) => r.id === "run-stale")!.status).toBe("interrupted");
   });
+
+  it("inserts and reads a chat", async () => {
+    await store.insertChat(chatRec({ id: "chat-a", title: "Checkout run" }));
+    const got = await store.getChat("chat-a");
+    expect(got).toMatchObject({ id: "chat-a", userId: "u1", title: "Checkout run", messages: [], draft: {} });
+    expect(await store.getChat("nope")).toBeNull();
+  });
+
+  it("appendChatTurn appends messages and merges the draft and title in one write", async () => {
+    await store.insertChat(chatRec({ id: "chat-b" }));
+    await store.appendChatTurn(
+      "chat-b",
+      [{ role: "user", text: "test the shop", at: new Date().toISOString() }],
+      { draft: { url: "http://localhost:3005" }, title: "Mini shop" },
+    );
+    await store.appendChatTurn(
+      "chat-b",
+      [{ role: "assistant", text: "which flows?", at: new Date().toISOString() }],
+      { draft: { url: "http://localhost:3005", intent: "checkout" } },
+    );
+
+    const got = (await store.getChat("chat-b"))!;
+    expect(got.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(got.messages[1].text).toBe("which flows?");
+    expect(got.draft).toEqual({ url: "http://localhost:3005", intent: "checkout" });
+    expect(got.title).toBe("Mini shop");
+  });
+
+  it("appendChatTurn on an unknown chat is a no-op, never an upsert", async () => {
+    await store.appendChatTurn("ghost", [{ role: "user", text: "hi", at: new Date().toISOString() }], {});
+    expect(await store.getChat("ghost")).toBeNull();
+  });
+
+  it("keeps only the newest CHAT_MESSAGE_CAP messages", async () => {
+    await store.insertChat(chatRec({ id: "chat-cap" }));
+    const at = new Date().toISOString();
+    for (let i = 0; i < CHAT_MESSAGE_CAP + 5; i++) {
+      await store.appendChatTurn("chat-cap", [{ role: "user", text: `m${i}`, at }], {});
+    }
+    const got = (await store.getChat("chat-cap"))!;
+    expect(got.messages).toHaveLength(CHAT_MESSAGE_CAP);
+    expect(got.messages[0].text).toBe("m5");
+    expect(got.messages.at(-1)!.text).toBe(`m${CHAT_MESSAGE_CAP + 4}`);
+  });
+
+  it("lists a user's chats newest-updated first and never another user's", async () => {
+    await store.insertChat(chatRec({ id: "chat-old", title: "Old", updatedAt: "2026-01-01T00:00:00.000Z" }));
+    await store.insertChat(chatRec({ id: "chat-new", title: "New", updatedAt: "2026-02-01T00:00:00.000Z" }));
+    await store.insertChat(chatRec({ id: "chat-other", userId: "u2", updatedAt: "2026-03-01T00:00:00.000Z" }));
+
+    const listed = await store.listChats("u1");
+    expect(listed.map((c) => c.id)).toEqual(["chat-new", "chat-old"]);
+    expect(listed[0]).toMatchObject({ title: "New", updatedAt: "2026-02-01T00:00:00.000Z" });
+  });
+
+  it("summaries carry the started runId but not the transcript", async () => {
+    await store.insertChat(chatRec({ id: "chat-run" }));
+    await store.appendChatTurn("chat-run", [{ role: "user", text: "go", at: new Date().toISOString() }], { runId: "run-9" });
+    const [summary] = await store.listChats("u1");
+    expect(summary.runId).toBe("run-9");
+    expect(summary).not.toHaveProperty("messages");
+  });
+
+  it("deletes a chat", async () => {
+    await store.insertChat(chatRec({ id: "chat-del" }));
+    await store.deleteChat("chat-del");
+    expect(await store.getChat("chat-del")).toBeNull();
+  });
 });
 
 afterAll(async () => {
@@ -108,5 +181,16 @@ describe("withDerivedStatus", () => {
   it("does not touch a terminal status even with an ancient heartbeat", () => {
     const rec = runRec({ status: "done", heartbeatAt: "2020-01-01T00:00:00.000Z" });
     expect(withDerivedStatus(rec).status).toBe("done");
+  });
+});
+
+describe("run id collisions", () => {
+  it("refuses to start a second run under an id that is already taken, with a message that says so", async () => {
+    const store = memoryStore();
+    const user = await store.createUser("collide@example.com", "pw");
+    const rec = { id: "taken", userId: user.id, url: "http://x", hasPrd: false, status: "done" as const, startedAt: new Date().toISOString() };
+    await store.insertRun(rec);
+    await expect(store.insertRun(rec)).rejects.toThrow(RunIdTakenError);
+    await expect(store.insertRun(rec)).rejects.toThrow(/already exists/i);
   });
 });

@@ -17,11 +17,16 @@ export type Flow = {
 /** What the runner puts on a `test_result` event. */
 export type TestResultData = {
   id: string; title?: string; status: "passed" | "failed" | "timedOut" | "skipped" | "interrupted"; error?: string; errorLine?: number;
-  failingStep?: number; network?: Array<{ method: string; url: string; status: number }>; consoleErrors?: string[]; pageErrors?: string[];
+  failingStep?: number; failingExpect?: number; network?: Array<{ method: string; url: string; status: number }>; consoleErrors?: string[]; pageErrors?: string[];
   tracePath?: string; videoPath?: string; durationMs?: number;
 };
 /** What the classifier puts on a `test_result` event. */
 export type ClassificationData = { test: string; class: string; confidence: number; evidence?: string[]; action?: string; rationale?: string };
+
+/** The word the UI shows for a classification: a test that passed after a heal is "healed", any other is its class. */
+export function classificationLabel(c: ClassificationData): string {
+  return c.action === "healed" ? "healed" : c.class;
+}
 
 export type CaseStatus = "planned" | "running" | "passed" | "failed" | "blocked";
 export const CASE_STATUSES: CaseStatus[] = ["planned", "running", "passed", "failed", "blocked"];
@@ -230,8 +235,9 @@ export type StepState = "passed" | "failed" | "pending" | "skipped";
 
 /**
  * Per-step outcome for a test, using the failing step the runner derived from the error
- * line. A failure with no failing step happened in an expectation, so every action passed
- * and the expectations are what failed.
+ * line. A failure with no failing step happened in an expectation, so every action passed;
+ * when the runner says which expectation, the ones before it passed and the ones after it
+ * never ran, otherwise all of them are shown as failed.
  */
 export function stepStates(flow: Flow, row: Pick<CaseRow, "status" | "result">): { steps: StepState[]; expectations: StepState[] } {
   const n = flow.steps.length;
@@ -240,7 +246,11 @@ export function stepStates(flow: Flow, row: Pick<CaseRow, "status" | "result">):
   if (row.status === "passed") return { steps: fill(n, "passed"), expectations: fill(m, "passed") };
   if (row.status !== "failed") return { steps: fill(n, "pending"), expectations: fill(m, "pending") };
   const failing = row.result?.failingStep;
-  if (failing === undefined) return { steps: fill(n, "passed"), expectations: fill(m, "failed") };
+  if (failing === undefined) {
+    const failingExpect = row.result?.failingExpect;
+    if (failingExpect === undefined) return { steps: fill(n, "passed"), expectations: fill(m, "failed") };
+    return { steps: fill(n, "passed"), expectations: flow.expected.map((_, i) => (i < failingExpect ? "passed" : i === failingExpect ? "failed" : "skipped")) };
+  }
   return {
     steps: flow.steps.map((_, i) => (i < failing ? "passed" : i === failing ? "failed" : "skipped")),
     expectations: fill(m, "skipped"),

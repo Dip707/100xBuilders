@@ -76,3 +76,17 @@ describe("reportNode", () => {
     expect(readFileSync(dir + "report.html", "utf8")).not.toContain("<script>");
   });
 });
+
+
+describe("reportNode suite bundle", () => {
+  it("leaves a standalone suite on disk beside the report", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-report-suite-")) + "/";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    await reportNode(sample(), { bus, llm: new FakeLlmClient({}) });
+    const dir = process.env.QA_PILOT_OUTPUT + "r/suite/";
+    for (const name of ["README.md", "package.json", "playwright.config.ts", "fixtures.ts"]) {
+      expect(existsSync(dir + name), name).toBe(true);
+    }
+    expect(readFileSync(dir + "playwright.config.ts", "utf8")).toContain("http://x");
+  });
+});

@@ -1,0 +1,21 @@
+<!--
+  The qa-pilot mark on its tile. A second copy of the geometry in components/ui/Logo.tsx:
+  a static metadata file cannot import from the app, and generating this through
+  ImageResponse would cost a render on every cold tab for a shape that never changes.
+  Redraw the mark and both have to move together - favicon.ico and apple-icon.png are
+  rasterised from this file, so they follow on their own.
+
+  The transform fits the mark's drawn bounds into the 32px tile with 3px of padding. That
+  is tighter than the tile in the app chrome on purpose: at 16px in a tab strip the hub and
+  its three nodes merge into one blob unless the mark is given nearly the whole tile.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#0d0d0d"/>
+  <g transform="translate(0.767 0.767) scale(1.2695)" stroke="#ffffff" fill="#ffffff">
+    <path d="M12 14.35 12 4.95M12 14.35 20.14 19.05M12 14.35 3.86 19.05" fill="none" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="12" cy="14.35" r="3.35" stroke="none"/>
+    <circle cx="12" cy="4.95" r="2.1" stroke="none"/>
+    <circle cx="20.14" cy="19.05" r="2.1" stroke="none"/>
+    <circle cx="3.86" cy="19.05" r="2.1" stroke="none"/>
+  </g>
+</svg>

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApi } from "../src/api.js";
 import { getBus } from "../src/events.js";
+import { getScreencast, disposeScreencast } from "../src/browser/screencast.js";
 import { memoryStore } from "../src/store/memory.js";
 import type { Store } from "../src/store/types.js";
 import { hashToken, mintToken, SESSION_COOKIE, SESSION_TTL_MS } from "../src/auth/session.js";
@@ -76,6 +77,39 @@ describe("api", () => {
 
     // Not a run of ours at all.
     expect((await app.request(`${ORIGIN}/report/missing`, { headers: { cookie } })).status).toBe(404);
+  });
+
+  it("streams the newest viewport frame per agent and closes when the run ends", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-cast-")) + "/";
+    await own("api-cast");
+    const hub = getScreencast("api-cast");
+    // Frames already captured before anyone opened the run screen: the connection must
+    // start from the current picture rather than an empty panel.
+    hub.push("planner", "AAA", 1000);
+    hub.push("generator:checkout", "BBB", 1000);
+    // The stream ends only when the hub does, so end it once the response is being read.
+    setTimeout(() => disposeScreencast("api-cast"), 50);
+
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+    const res = await app.request(`${ORIGIN}/screencast/api-cast`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+    const text = await res.text();
+    expect(text).toContain("event: frame");
+    expect(text).toContain('"agent":"planner"');
+    expect(text).toContain('"jpeg":"AAA"');
+    expect(text).toContain('"agent":"generator:checkout"');
+    // Ending the run tears every tile down, so the panel does not freeze on a dead frame.
+    expect(text).toContain('"jpeg":null');
+  });
+
+  it("does not stream a screencast for a run we do not own", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-cast2-")) + "/";
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+    expect((await app.request(`${ORIGIN}/screencast/someone-elses-run`, { headers: { cookie } })).status).toBe(404);
+    expect((await app.request(`${ORIGIN}/screencast/..`, { headers: { cookie } })).status).toBe(404);
+    expect((await app.request(`${ORIGIN}/screencast/api-cast`)).status).toBe(401);
   });
 
   it("serves run files and blocks path traversal", async () => {
@@ -208,5 +242,35 @@ describe("plan review and single-test rerun routes", () => {
     const video = await app.request(`${ORIGIN}/runs/lv/files/traces/videos/auth-001.webm`, { headers: { cookie } });
     expect(video.headers.get("content-type")).toBe("video/webm");
     expect(video.headers.get("cache-control")).not.toBe("no-store");
+  });
+});
+
+
+describe("suite download", () => {
+  it("serves the run's suite as a zip the owner can open, and hides it from everyone else", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-suite-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "api-r9/suite/tests", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "api-r9/suite/README.md", "# Suite");
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "api-r9/suite/tests/auth-001.spec.ts", "import { test } from '../fixtures';");
+    await own("api-r9");
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+
+    const res = await app.request(`${ORIGIN}/runs/api-r9/suite.zip`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/zip");
+    expect(res.headers.get("content-disposition")).toContain("api-r9");
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.subarray(0, 2).toString("binary")).toBe("PK");
+    expect(body.toString("binary")).toContain("tests/auth-001.spec.ts");
+
+    expect((await app.request(`${ORIGIN}/runs/api-r9/suite.zip`)).status).toBe(401);
+    expect((await app.request(`${ORIGIN}/runs/missing/suite.zip`, { headers: { cookie } })).status).toBe(404);
+  });
+
+  it("says the suite is not ready rather than serving an empty archive", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-nosuite-")) + "/";
+    await own("api-r10");
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+    expect((await app.request(`${ORIGIN}/runs/api-r10/suite.zip`, { headers: { cookie } })).status).toBe(404);
   });
 });

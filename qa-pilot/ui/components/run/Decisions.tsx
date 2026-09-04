@@ -1,21 +1,22 @@
 import { decisionRows } from "@/lib/derive";
+import { Icon } from "@/components/ui";
 import type { RunEvent } from "@/lib/events";
 
 export function Decisions({ events }: { events: RunEvent[] }) {
   const rows = decisionRows(events);
-  if (rows.length === 0) return <p className="p-4 text-sm text-muted">No branch decisions yet.</p>;
+  if (rows.length === 0) return <p className="p-4 text-[13px] text-muted">No branch decisions yet.</p>;
   return (
-    <ol className="h-full space-y-3 overflow-auto p-1">
+    <ol className="h-full space-y-2.5 overflow-auto p-1">
       {rows.map((d, i) => (
-        <li key={i} className="border-l-2 border-accent pl-3">
-          <div className="flex items-center gap-1.5 text-[13px] font-medium">
-            <span className="text-fg">{d.node}</span>
-            <span className="text-subtle" aria-hidden="true">→</span>
-            <span className="text-accent">{d.next}</span>
+        <li key={i} className="rounded-box border border-line bg-inset px-3.5 py-3">
+          <div className="flex items-center gap-1.5 text-[12.5px] font-medium">
+            <span className="font-mono text-muted">{d.node}</span>
+            <Icon name="arrowRight" size={12} className="text-subtle" />
+            <span className="font-mono text-fg">{d.next}</span>
           </div>
-          <p className="mt-0.5 text-sm text-fg">{d.reason}</p>
+          <p className="mt-1 text-[13px] leading-relaxed text-body">{d.reason}</p>
           {d.evidence.length > 0 && (
-            <p className="mt-1 font-mono text-[11px] leading-relaxed text-muted">{d.evidence.slice(0, 4).join(" · ")}</p>
+            <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-subtle">{d.evidence.slice(0, 4).join(" · ")}</p>
           )}
         </li>
       ))}

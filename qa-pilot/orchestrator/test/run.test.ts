@@ -121,3 +121,57 @@ describe("runPlaywright live preview and recording", () => {
     expect(existsSync(process.env.QA_PILOT_OUTPUT + `${runId}/live/auth-002/frame.jpg`)).toBe(true);
   }, 120_000);
 });
+
+describe("parseJsonReport failing expectation", () => {
+  it("maps a failing expect line to its index among the expect lines", () => {
+    const report = {
+      suites: [{ title: "checkout-001.spec.ts", file: "checkout-001.spec.ts", specs: [{ title: "T", file: "checkout-001.spec.ts", id: "x", ok: false, tests: [{ status: "unexpected", annotations: [], results: [{ status: "failed", duration: 5, error: { message: "boom" }, errorLocation: { file: "checkout-001.spec.ts", line: 11, column: 3 }, attachments: [], errors: [] }] }] }] }],
+    };
+    const dir = mkdtempSync(join(tmpdir(), "qa-parse-")) + "/";
+    writeFileSync(dir + "checkout-001.spec.ts", failing);
+    const [t] = parseJsonReport(report, dir, dir);
+    expect(t.failingStep).toBeUndefined();
+    expect(t.failingExpect).toBe(0);
+  });
+});
+
+describe("runPlaywright concurrency", () => {
+  it("keeps concurrent single-file invocations from reading each other's report or wiping each other's artifacts", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-run-par-")) + "/";
+    const runId = "par";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + `${runId}/tests`, { recursive: true });
+    const a = process.env.QA_PILOT_OUTPUT + `${runId}/tests/auth-002.spec.ts`;
+    const b = process.env.QA_PILOT_OUTPUT + `${runId}/tests/auth-003.spec.ts`;
+    writeFileSync(a, passing);
+    writeFileSync(b, passing.replace("auth-002", "auth-003"));
+    const bus = new EventBus(runId, process.env.QA_PILOT_OUTPUT + `${runId}/`);
+    const [ra, rb] = await Promise.all([
+      runPlaywright({ runId, baseUrl: shop.base, loginSteps: [], files: [a], bus }),
+      runPlaywright({ runId, baseUrl: shop.base, loginSteps: [], files: [b], bus }),
+    ]);
+    expect(ra.tests.map((t) => t.id)).toEqual(["auth-002"]);
+    expect(rb.tests.map((t) => t.id)).toEqual(["auth-003"]);
+    expect(ra.tests[0].status).toBe("passed");
+    expect(rb.tests[0].status).toBe("passed");
+    expect(existsSync(ra.tests[0].videoPath!)).toBe(true);
+    expect(existsSync(rb.tests[0].videoPath!)).toBe(true);
+    const results = bus.replay().filter((e) => e.type === "test_result").map((e) => (e.data as { id: string }).id).sort();
+    expect(results).toEqual(["auth-002", "auth-003"]);
+  }, 120_000);
+});
+
+describe("runPlaywright on a missing step target", () => {
+  it("fails fast with a locator error that names the step, instead of hitting the test timeout", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-run-missing-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
+    const missing = passing.replace("{ name: 'Sign in' }", "{ name: 'Teleport' }");
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "r/tests/auth-002.spec.ts", missing);
+    const started = Date.now();
+    const results = await runPlaywright({ runId: "r", baseUrl: shop.base, loginSteps: [] });
+    const t = results.tests[0];
+    expect(t.status).toBe("failed");
+    expect(t.failingStep).toBe(3);
+    expect(t.error).toMatch(/Teleport/);
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 120_000);
+});

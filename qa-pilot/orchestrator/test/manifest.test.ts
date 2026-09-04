@@ -22,6 +22,6 @@ describe("artifactManifest", () => {
   });
 
   it("returns an empty manifest for a run with no directory", () => {
-    expect(artifactManifest("never-ran")).toEqual({ files: [], traces: [], hasReport: false });
+    expect(artifactManifest("never-ran")).toEqual({ files: [], traces: [], hasReport: false, hasSuite: false });
   });
 });

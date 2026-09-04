@@ -1,5 +1,6 @@
 import "./env.js";
 import { getBus, type EventBus } from "./events.js";
+import { disposeScreencast } from "./browser/screencast.js";
 import { makeLlmClient, type LlmClient } from "./llm/client.js";
 import { buildGraph, REVIEW_NODE } from "./graph.js";
 import { FlowSchema, initialState, outputDir, StartRunInputSchema, type Flow, type StartRunInput, type RunState } from "./state.js";
@@ -154,7 +155,7 @@ export async function startRun(
 
   const bus = getBus(parsed.runId);
   const llm = opts.llm ?? makeLlmClient(bus);
-  const headless = opts.headless ?? process.env.QA_PILOT_HEADLESS === "1";
+  const headless = opts.headless ?? process.env.QA_PILOT_HEADLESS !== "0";
   const graph = buildGraph({ bus, llm, headless }, { checkpointPath: outputDir(parsed.runId) + "checkpoint.db" });
   const state = initialState(parsed);
 
@@ -211,12 +212,16 @@ export async function startRun(
     .then((s) => ({ ...s, llmCalls: Math.max(s.llmCalls, llm.calls) }) as RunState)
     .then(async (s) => {
       unsubscribe();
+      // Frames are only meaningful while the run is live, and each hub retains a JPEG per
+      // agent; releasing it here keeps a long-lived API process from hoarding one set per run.
+      disposeScreencast(parsed.runId);
       runContexts.set(parsed.runId, { url: s.url, loginSteps: s.siteMap?.loginSteps ?? [] });
       await record(store, bus, parsed.runId, summarise(s, state.startedAt));
       return s;
     })
     .catch(async (err: Error) => {
       unsubscribe();
+      disposeScreencast(parsed.runId);
       pendingReviews.delete(parsed.runId);
       const finishedAt = new Date().toISOString();
       await record(store, bus, parsed.runId, {

@@ -47,3 +47,30 @@ describe("state schemas", () => {
     expect(s.partial).toBe(false);
   });
 });
+
+describe("URL expectations", () => {
+  const base = { id: "auth-001", title: "Login works", category: "happy" as const, priority: "P1" as const, preconditions: [], source: "explored" as const, steps: [{ action: "goto" as const, target: "/login" }] };
+  it("rejects a url_contains value that is not a URL fragment, so the planner is asked again", () => {
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "url_contains", value: "/','" }] }).success).toBe(false);
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "url_stays", value: "login page" }] }).success).toBe(false);
+  });
+  it("accepts ordinary paths, query strings and hash routes", () => {
+    for (const value of ["/products", "/orders?page=2", "/#/faq", "products/p1"]) {
+      expect(FlowSchema.safeParse({ ...base, expected: [{ type: "url_contains", value }] }).success).toBe(true);
+    }
+  });
+});
+
+describe("expectation specificity", () => {
+  const base = { id: "coupon-001", title: "Coupon applies", category: "happy" as const, priority: "P1" as const, preconditions: [], source: "explored" as const, steps: [{ action: "goto" as const, target: "/checkout" }] };
+  it("rejects a visibility expectation that names neither an element nor its text", () => {
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "visible", role: "alert" }] }).success).toBe(false);
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "text_contains" }] }).success).toBe(false);
+  });
+  it("accepts expectations that say what they look for", () => {
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "visible", role: "alert", text_contains: "Invalid" }] }).success).toBe(true);
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "visible", role: "heading", name: "Checkout" }] }).success).toBe(true);
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "not_visible", role: "button", name: "Place order" }] }).success).toBe(true);
+    expect(FlowSchema.safeParse({ ...base, expected: [{ type: "text_contains", text_contains: "Order placed" }] }).success).toBe(true);
+  });
+});

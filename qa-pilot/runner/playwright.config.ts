@@ -11,6 +11,11 @@ export default defineConfig({
   reporter: [["json", { outputFile: process.env.QA_PILOT_JSON_REPORT ?? "./results.json" }]],
   use: {
     baseURL: process.env.QA_PILOT_BASE_URL ?? "http://localhost:3005",
+    // Without these a click on a missing element waits out the whole test timeout and is
+    // reported as timedOut with no error location: no failing step for the classifier, no
+    // locator for the healer. A bounded action timeout turns it into a locator error instead.
+    actionTimeout: 10_000,
+    navigationTimeout: 15_000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     // Every test is recorded so the UI can replay it; the run node copies the file out

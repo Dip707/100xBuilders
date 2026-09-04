@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { EmailTakenError, normaliseEmail, withDerivedStatus, type RunRecord, type Store, type User } from "./types.js";
+import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type RunRecord, type Store, type User } from "./types.js";
 
 /**
  * The `Store` over plain Maps. Used by every test that is not specifically testing Mongo,
@@ -7,10 +7,17 @@ import { EmailTakenError, normaliseEmail, withDerivedStatus, type RunRecord, typ
  * database. Expiry and derived status are implemented here exactly as Mongo implements
  * them, and `test/store.test.ts` runs the same contract against both.
  */
+/** Drops the transcript and draft, mirroring what the Mongo projection leaves out. */
+function summary(rec: ChatRecord): ChatSummary {
+  const { messages: _messages, draft, ...rest } = rec;
+  return draft.url ? { ...rest, url: draft.url } : rest;
+}
+
 export function memoryStore(): Store {
   const users = new Map<string, User & { passwordHash: string }>();
   const sessions = new Map<string, { userId: string; expiresAt: Date }>();
   const runs = new Map<string, RunRecord>();
+  const chats = new Map<string, ChatRecord>();
 
   return {
     async createUser(email, passwordHash) {
@@ -46,6 +53,7 @@ export function memoryStore(): Store {
     },
 
     async insertRun(rec) {
+      if (runs.has(rec.id)) throw new RunIdTakenError(rec.id);
       runs.set(rec.id, { ...rec });
     },
     async updateRun(id, patch) {
@@ -66,6 +74,36 @@ export function memoryStore(): Store {
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
         .slice(0, limit)
         .map((r) => withDerivedStatus({ ...r }));
+    },
+
+    async insertChat(rec) {
+      chats.set(rec.id, { ...rec, messages: [...rec.messages], draft: { ...rec.draft } });
+    },
+    async getChat(id) {
+      const rec = chats.get(id);
+      return rec ? { ...rec, messages: [...rec.messages], draft: { ...rec.draft } } : null;
+    },
+    async listChats(userId, limit = 50) {
+      return [...chats.values()]
+        .filter((c) => c.userId === userId)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .slice(0, limit)
+        .map(summary);
+    },
+    async appendChatTurn(id, messages, patch) {
+      const cur = chats.get(id);
+      if (!cur) return;
+      chats.set(id, {
+        ...cur,
+        messages: cur.messages.concat(messages).slice(-CHAT_MESSAGE_CAP),
+        draft: patch.draft ? { ...patch.draft } : cur.draft,
+        title: patch.title ?? cur.title,
+        runId: patch.runId ?? cur.runId,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    async deleteChat(id) {
+      chats.delete(id);
     },
 
     async close() { /* nothing to release */ },

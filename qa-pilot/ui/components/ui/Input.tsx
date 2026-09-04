@@ -1,7 +1,10 @@
 import type { InputHTMLAttributes } from "react";
 
-const BASE = "w-full rounded-input border border-line-strong bg-surface px-3 py-2 text-sm text-fg placeholder:text-subtle focus:border-accent focus:outline-none disabled:bg-inset";
+// Focus brightens the hairline rather than painting a coloured ring - the system never
+// puts an accent hue on chrome.
+const BASE =
+  "w-full rounded-input border border-line bg-inset px-3 text-sm text-fg placeholder:text-subtle focus:border-line-strong focus:outline-none disabled:text-subtle disabled:opacity-60";
 
 export function Input({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...rest} className={`${BASE} h-10 ${className}`} />;
+  return <input {...rest} className={`${BASE} h-9 ${className}`} />;
 }

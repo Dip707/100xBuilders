@@ -29,15 +29,15 @@ export function LivePreview({ runId, relPath, active, fps = 4 }: { runId: string
   return (
     <div className="relative overflow-hidden rounded-box border border-line bg-console">
       {active && (
-        <span className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white">
-          <span className="size-2 animate-pulse rounded-full bg-red-500" aria-hidden="true" /> Live
+        <span className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-chip border border-white/10 bg-black/70 px-2 py-1 text-[10.5px] font-medium uppercase leading-none tracking-[0.6px] text-white backdrop-blur-sm">
+          <span className="size-1.5 animate-pulse rounded-full bg-[#ff6161]" aria-hidden="true" /> Live
         </span>
       )}
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element -- authenticated, cache-busted API path
         <img src={src} alt="Live view of the browser running this test" className="aspect-[16/10] w-full object-contain" />
       ) : (
-        <div className="flex aspect-[16/10] items-center justify-center text-sm text-neutral-400">
+        <div className="flex aspect-[16/10] items-center justify-center text-[13px] text-[#6a6b6c]">
           {active ? "waiting for the first frame…" : "no preview captured"}
         </div>
       )}

@@ -9,6 +9,8 @@ Rules:
 - For each gated route produce one authz flow: visit it logged out and expect the URL to contain the login path.
 - Include at least one edge or error_state flow (boundary values, invalid formats, missing items).
 - Every flow needs at least one expectation that verifies an outcome (visible alert or status text, heading, URL change or URL staying). Never rely on "no crash".
+- Every visible, not_visible or text_contains expectation must say what it looks for: the element's accessible name, or in text_contains the words it must show (e.g. role "status" with text_contains "Coupon applied", role "alert" with text_contains "Invalid"). A bare role is not an expectation: any alert would satisfy it, including the app's own error message.
+- url_contains and url_stays take a path or route in "value" (e.g. "/orders", "/#/faq"), never prose.
 - Flows that need a session start with precondition "logged_in"; the login is done by a fixture, so do not repeat login steps in those flows.
 - Flows that test login itself use precondition "logged_out".
 - Set "intent" on every step to a short description of what the step accomplishes (used later for self-healing).
@@ -16,3 +18,4 @@ Rules:
 - Ids are kebab-case like "auth-001", "checkout-003". Titles are one sentence.
 - Return no more than the maximum number of flows. If gaps are listed, close them first.
 - Valid test credentials, when provided in the input, are the only credentials that work. Use them for happy paths and change one thing for negative paths.
+- Any value that must not already exist in the app (a new account's email or username, a newly created record's name) must contain the placeholder {{unique}}, e.g. "user-{{unique}}@test.com". The pipeline replaces it with a fresh token on every run, so the flow never collides with data an earlier run created. Never invent a fixed email for a registration flow.

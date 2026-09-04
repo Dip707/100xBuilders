@@ -19,37 +19,37 @@ export function RunTable({ runs }: { runs: RunRecord[] }) {
         {runs.map((run) => (
           <tr
             key={run.id} onClick={() => router.push(`/runs/${run.id}`)}
-            className="cursor-pointer transition-colors hover:bg-inset"
+            className="cursor-pointer transition-colors last:[&>td]:border-b-0 hover:bg-selected"
           >
             <Td><StatusPill status={run.status} /></Td>
             <Td>
               <Link
                 href={`/runs/${run.id}`}
                 onClick={(e) => e.stopPropagation()}
-                className="font-mono text-[13px] hover:underline"
+                className="font-mono text-[13px] text-fg hover:underline"
               >
                 {hostOf(run.url)}
               </Link>
-              {run.intent && <span className="ml-2 text-[13px] text-muted">{run.intent}</span>}
+              {run.intent && <span className="ml-2 text-[12.5px] text-muted">{run.intent}</span>}
             </Td>
-            <Td className="whitespace-nowrap text-muted">{relativeTime(run.startedAt)}</Td>
-            <Td className="whitespace-nowrap text-muted">{formatDuration(run.durationMs)}</Td>
+            <Td className="whitespace-nowrap text-[13px] text-muted">{relativeTime(run.startedAt)}</Td>
+            <Td className="whitespace-nowrap font-mono text-[13px] text-muted">{formatDuration(run.durationMs)}</Td>
             <Td>
               {run.coverageScore === undefined
                 ? <span className="text-subtle">-</span>
-                : <Meter value={run.coverageScore} label={run.coverageScore.toFixed(2)} />}
+                : <Meter value={run.coverageScore} label={run.coverageScore.toFixed(2)} showPercent={false} />}
             </Td>
             <Td className="whitespace-nowrap">
               {run.testsPassed === undefined ? <span className="text-subtle">-</span> : (
-                <span className="font-mono text-[13px]">
+                <span className="font-mono text-[13px] tabular-nums">
                   <span className="text-pass">{run.testsPassed}</span>
                   <span className="text-subtle"> / </span>
                   <span className={run.testsFailed ? "text-fail" : "text-muted"}>{run.testsFailed ?? 0}</span>
                 </span>
               )}
             </Td>
-            <Td className={run.defectsCount ? "font-medium text-defect" : "text-subtle"}>{run.defectsCount ?? "-"}</Td>
-            <Td className="text-muted">{run.healsAccepted ?? "-"}</Td>
+            <Td className={`font-mono text-[13px] tabular-nums ${run.defectsCount ? "font-medium text-defect" : "text-subtle"}`}>{run.defectsCount ?? "-"}</Td>
+            <Td className="font-mono text-[13px] tabular-nums text-muted">{run.healsAccepted ?? "-"}</Td>
           </tr>
         ))}
       </tbody>

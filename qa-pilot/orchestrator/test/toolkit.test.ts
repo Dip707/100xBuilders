@@ -87,3 +87,41 @@ describe("expectationCode", () => {
     expect(expectationCode({ type: "visible", role: "heading", name: "Products" })).toBe("await expect(page.getByRole('heading', { name: 'Products' })).toBeVisible();");
   });
 });
+
+describe("checkExpectation locator resolution", () => {
+  it("falls back to exact:true when the loose role match is ambiguous, and emits that code", async () => {
+    const page = await kit.newPage();
+    await page.setContent('<a href="/orders">Orders</a><a href="/orders/new">View orders</a>');
+    const r = await kit.checkExpectation(page, { type: "visible", role: "link", name: "Orders" }, page.url());
+    expect(r.ok).toBe(true);
+    expect(r.code).toBe("await expect(page.getByRole('link', { name: 'Orders', exact: true })).toBeVisible();");
+    await page.close();
+  });
+  it("keeps the loose locator when it is unambiguous", async () => {
+    const page = await kit.newPage();
+    await page.setContent('<a href="/orders">Orders</a>');
+    const r = await kit.checkExpectation(page, { type: "visible", role: "link", name: "Orders" }, page.url());
+    expect(r.ok).toBe(true);
+    expect(r.code).toBe("await expect(page.getByRole('link', { name: 'Orders' })).toBeVisible();");
+    await page.close();
+  });
+});
+
+describe("unique test data", () => {
+  it("substitutes {{unique}} in fills with a per-toolkit token", async () => {
+    const page = await kit.newPage();
+    await page.setContent('<label>Email <input type="email"></label>');
+    expect(kit.unique).toMatch(/^[a-z0-9]{4,}$/);
+    await kit.act(page, { action: "fill", role: "textbox", name: "Email", value: "user-{{unique}}@test.com" });
+    expect(await page.getByRole("textbox", { name: "Email" }).inputValue()).toBe(`user-${kit.unique}@test.com`);
+    await page.close();
+  });
+  it("substitutes {{unique}} in expectations and emits a template literal", async () => {
+    const page = await kit.newPage();
+    await page.setContent(`<p>Signed in as user-${kit.unique}@test.com</p>`);
+    const r = await kit.checkExpectation(page, { type: "text_contains", text_contains: "Signed in as user-{{unique}}@test.com" }, page.url());
+    expect(r.ok).toBe(true);
+    expect(r.code).toBe("await expect(page.locator('body')).toContainText(`Signed in as user-${unique}@test.com`);");
+    await page.close();
+  });
+});

@@ -10,12 +10,13 @@ import type { Flow } from "./cases";
  * in the same file). Reading the file rather than reconstructing it from agent logs means
  * the UI shows exactly the flows the generator will see.
  */
-export function usePlan(runId: string, events: RunEvent[]): Flow[] | null {
+export function usePlan(runId: string | null, events: RunEvent[]): Flow[] | null {
   const [plan, setPlan] = useState<Flow[] | null>(null);
   // Counting node_end events for plan/review gives a value that only changes when the
   // file on disk may have changed, so the effect is not re-run for every log line.
   const version = useMemo(() => events.filter((e) => e.type === "node_end" && (e.node === "plan" || e.node === "review")).length, [events]);
   useEffect(() => {
+    if (!runId) return;
     let cancelled = false;
     fetchArtifact(runId, "plan.json")
       .then((text) => { if (!cancelled) setPlan(text ? (JSON.parse(text) as Flow[]) : []); })

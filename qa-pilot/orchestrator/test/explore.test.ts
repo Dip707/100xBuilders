@@ -56,3 +56,20 @@ describe("filterLinks", () => {
     expect(filterLinks(links, origin)).toEqual(["/products"]);
   });
 });
+
+describe("crawl on a single-page app", () => {
+  it("finds JS-rendered links, pushState navigation and hash routes without clicking destructive controls", async () => {
+    const { startSpa } = await import("./helpers/spa.js");
+    const spa = await startSpa();
+    const kit = await BrowserToolkit.launch({ headless: true, baseUrl: spa.base });
+    try {
+      const map = await crawl(kit, {});
+      expect(Object.keys(map.pages)).toEqual(expect.arrayContaining(["/", "/about", "/contact", "/#/faq"]));
+      expect(map.pages["/contact"].forms).toHaveLength(1);
+      expect(spa.destroyed()).toBe(0);
+    } finally {
+      await kit.close();
+      await spa.stop();
+    }
+  }, 120_000);
+});

@@ -1,8 +1,8 @@
-export function Spinner({ size = 16 }: { size?: number }) {
+export function Spinner({ size = 14 }: { size?: number }) {
   return (
     <span
       role="status" aria-label="loading" style={{ width: size, height: size }}
-      className="inline-block animate-spin rounded-full border-2 border-line border-t-accent"
+      className="inline-block shrink-0 animate-spin rounded-full border-[1.5px] border-line-strong border-t-fg"
     />
   );
 }

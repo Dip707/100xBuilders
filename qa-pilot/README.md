@@ -32,12 +32,31 @@ npm run qa-pilot -- run http://localhost:3005 --username demo@shop.test --passwo
 
 Outputs land in `output/<run_id>/`: `plan.md`, `plan.json`, `coverage.json`, `tests/*.spec.ts`, `results.json`, `heal-log.json`, `defects.json`, `report.md`, `report.html`, `decisions.jsonl`, `events.jsonl`, `traces/` (Playwright traces, one `videos/<test>.webm` recording per test, and agent screenshots), and `live/` (the frames the runner streams while a test executes).
 
+### Taking the suite with you
+
+`output/<run_id>/suite/` is the generated suite as a standalone Playwright project: the specs, the fixtures they need, a config, and a README.
+It has no dependency on qa-pilot, so an engineer can keep it in their own repository.
+
+```bash
+cd output/<run_id>/suite
+npm install
+npx playwright install chromium
+export QA_USERNAME='...' QA_PASSWORD='...'   # only if the target needs a login
+npm test
+```
+
+The sign-in the agent recorded is baked into `fixtures.ts`, but the credentials are read from the environment and never written to the bundle, so the suite is safe to commit.
+`BASE_URL` overrides the target, so the same suite runs against another environment.
+In the UI, **Download suite** on the run header returns the same thing as a zip.
+
 ## The UI
 
 Every run has three screens, reachable from the sidebar once a run is open.
 
 - **Test runs** (`/runs/<id>`): the execution strip and summary card, then every planned test grouped by use case with its status in this run.
   The *Agent actions view* tab shows the pipeline strip, the agent feed, the branch decisions, the plan and the report.
+  Its **Browser** panel is a live view of what the agents are looking at: Chromium streams JPEG frames over CDP, so the browsers stay headless and every fanned-out generator is watchable at once, one tile per agent.
+  When the run ends the stream closes and the panel falls back to the last screenshot on disk.
 - **Test cases** (`/runs/<id>/cases`): the same tests with their latest status, filterable by Planned, Running, Passed, Failed or Blocked, searchable, with *Run all* to re-execute them.
 - **Test coverage** (`/runs/<id>/coverage`): the plan as a graph, one lane per use case fanning out to its tests, with the evaluator's remaining gaps drawn as dashed nodes in the lane they belong to, next to the score and per-check breakdown.
 
@@ -69,7 +88,8 @@ A screenshot of the live UI during a fake-LLM run that stops at planning, showin
 |---|---|---|
 | `ANTHROPIC_API_KEY` | required | Claude API key |
 | `QA_PILOT_MODEL` | `claude-opus-5` | model for every LLM call |
-| `QA_PILOT_HEADLESS` | `0` | `1` runs the exploration browser headless |
+| `QA_PILOT_HEADLESS` | `1` | `0` shows the agents' browser windows; a run opens one per planned flow, so watch the run screen instead |
+| `QA_PILOT_SCREENCAST` | `1` | `0` turns off the live viewport stream on the run screen |
 | `QA_PILOT_API_PORT` | `4000` | API port |
 | `QA_PILOT_OUTPUT` | `qa-pilot/output/` | where run artifacts go |
 

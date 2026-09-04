@@ -30,6 +30,13 @@ function stepAtLine(source: string, line: number): number | undefined {
   }
   return undefined;
 }
+/** Index of the failing line among the file's expect lines, or undefined when the failure is not on one. */
+export function expectAtLine(source: string, line: number): number | undefined {
+  const lines = source.split("\n");
+  if (!/^\s*await expect\(/.test(lines[line - 1] ?? "")) return undefined;
+  return lines.slice(0, line - 1).filter((l) => /^\s*await expect\(/.test(l)).length;
+}
+
 function findTrace(dir: string, id: string): string | undefined {
   if (!existsSync(dir)) return undefined;
   for (const entry of readdirSync(dir)) {
@@ -78,12 +85,14 @@ export function liveDir(runId: string): string {
  * a blink of the truth without touching the bus with frame data. Only state files written
  * after the watcher started count, so a file left behind by an earlier invocation - one per
  * generated flow, then the suite, then every heal or rerun - is never announced twice.
+ * A test quick enough to finish between two polls is announced by the final scan, from its
+ * finished state, so every test_result is still preceded by its test_start.
  */
 function watchLive(dir: string, bus: NodeDeps["bus"] | undefined, only?: Set<string>): () => void {
   if (!bus) return () => {};
   const since = Date.now();
   const announced = new Set<string>();
-  const scan = () => {
+  const scan = (final = false) => {
     if (!existsSync(dir)) return;
     for (const id of readdirSync(dir)) {
       // Generation runs one invocation per flow, concurrently, each with its own watcher;
@@ -93,7 +102,7 @@ function watchLive(dir: string, bus: NodeDeps["bus"] | undefined, only?: Set<str
       if (!existsSync(statePath) || statSync(statePath).mtimeMs < since) continue;
       try {
         const state = JSON.parse(readFileSync(statePath, "utf8")) as { status?: string; title?: string };
-        if (state.status !== "running") continue;
+        if (state.status !== "running" && !final) continue;
         announced.add(id);
         bus.emit({ type: "test_start", message: `${id} running`, data: { id, title: state.title ?? id } });
       } catch {
@@ -101,8 +110,8 @@ function watchLive(dir: string, bus: NodeDeps["bus"] | undefined, only?: Set<str
       }
     }
   };
-  const timer = setInterval(scan, 250);
-  return () => { clearInterval(timer); scan(); };
+  const timer = setInterval(() => scan(), 250);
+  return () => { clearInterval(timer); scan(true); };
 }
 
 export function parseJsonReport(report: unknown, testDir: string, traceDir: string): TestResult[] {
@@ -127,6 +136,7 @@ export function parseJsonReport(report: unknown, testDir: string, traceDir: stri
       error,
       errorLine,
       failingStep: errorLine && source ? stepAtLine(source, errorLine) : undefined,
+      failingExpect: errorLine && source ? expectAtLine(source, errorLine) : undefined,
       network: parseAnnotation(annotations, "network", []),
       consoleErrors: parseAnnotation(annotations, "console", []),
       pageErrors: parseAnnotation(annotations, "pageerror", []),
@@ -141,8 +151,14 @@ export function parseJsonReport(report: unknown, testDir: string, traceDir: stri
 export async function runPlaywright(opts: { runId: string; baseUrl: string; loginSteps: Step[]; files?: string[]; bus?: NodeDeps["bus"] }): Promise<RunResults> {
   const dir = outputDir(opts.runId);
   const testDir = dir + "tests";
-  const traceDir = dir + "traces/playwright";
-  const jsonReport = dir + "results.raw.json";
+  // Generation runs one invocation per flow, concurrently, and Playwright wipes its output
+  // directory on every start; so every invocation gets its own report and artifact directory,
+  // named after the tests it runs, and no invocation can read another's report or delete
+  // another's traces mid-run.
+  const invocation = opts.files ? opts.files.map((f) => f.split("/").pop()!.replace(/\.spec\.ts$/, "")).sort().join("+") : "suite";
+  const traceDir = `${dir}traces/playwright/${invocation}`;
+  const jsonReport = `${traceDir}/results.raw.json`;
+  mkdirSync(traceDir, { recursive: true });
   const live = liveDir(opts.runId);
   const args = ["playwright", "test", "--config", join(RUNNER_DIR, "playwright.config.ts"), ...(opts.files ?? []).map((f) => resolve(f))];
   opts.bus?.log("runner", `npx ${args.join(" ")}`);

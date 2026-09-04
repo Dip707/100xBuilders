@@ -2,12 +2,12 @@ export function Segmented<T extends string>({
   options, value, onChange,
 }: { options: Array<{ value: T; label: string }>; value: T; onChange: (v: T) => void }) {
   return (
-    <div className="inline-flex w-full gap-1 rounded-input bg-inset p-1">
+    <div className="inline-flex gap-0.5 rounded-input border border-line bg-app p-0.5">
       {options.map((o) => (
         <button
           key={o.value} type="button" onClick={() => onChange(o.value)} aria-pressed={o.value === value}
-          className={`flex-1 rounded-[0.375rem] px-3 py-1.5 text-sm font-medium transition-colors ${
-            o.value === value ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg"
+          className={`rounded-chip px-3 py-1 text-[13px] font-medium tracking-[0.2px] transition-colors ${
+            o.value === value ? "bg-inset text-fg" : "text-muted hover:text-fg"
           }`}
         >
           {o.label}

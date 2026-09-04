@@ -23,31 +23,79 @@ async function extractForms(page: Page, path: string): Promise<FormInfo[]> {
   return raw.map((f, i) => ({ id: `${path}#${i}`, ...f }));
 }
 
-async function pageInfo(kit: BrowserToolkit, page: Page, origin: string): Promise<PageInfo> {
-  const url = page.url();
-  const path = new URL(url).pathname;
-  const snapshot = await kit.snapshot(page);
-  const nodes = parseSnapshot(snapshot);
-  const links = await page.locator("a[href]").evaluateAll((as) => as.map((a) => ({ href: (a as HTMLAnchorElement).href, text: (a.textContent ?? "").trim() })));
-  return {
-    url,
-    path,
-    title: await page.title(),
-    forms: await extractForms(page, path),
-    buttons: nodes.filter((n) => n.role === "button").map((n) => ({ role: "button", name: n.name })),
-    links: links.filter((l) => l.href.startsWith(origin)),
-    gated: false,
-    snapshot,
-  };
+/**
+ * The route a URL addresses: its pathname, plus the fragment when the app routes on hashes
+ * (`/#/faq`). Every page key in the site map is one of these, and `goto` accepts them as-is.
+ */
+export function pathOf(url: string): string {
+  const u = new URL(url);
+  return u.pathname + (u.hash.startsWith("#/") ? u.hash : "");
 }
 
-/** Keeps only same-origin links whose text isn't blocklisted and whose path isn't a logout link, returning pathnames. */
-export function filterLinks(links: { href: string; text: string }[], origin: string): string[] {
+/** Gives client-side rendering a moment to finish; a page that never goes idle is read as it is. */
+async function settle(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+}
+
+type Link = { href: string; text: string };
+
+async function collectLinks(page: Page): Promise<Link[]> {
+  await settle(page);
+  return page.locator("a[href]").evaluateAll((as) => as.map((a) => ({ href: (a as HTMLAnchorElement).href, text: (a.textContent ?? "").trim() })));
+}
+
+/** Navigation controls that are not anchors: what a single-page app routes with. Submit buttons act on forms, so they are left alone. */
+const NAV_PROBE_SELECTOR = "nav button:not([type=submit]), header button:not([type=submit]), [role=navigation] button:not([type=submit]), [role=link]:not([href]), [data-href], [routerlink], [routerLink]";
+const MAX_PROBES_PER_PAGE = 10;
+
+/**
+ * Clicks each navigation control on the page once and records where it leads. A control
+ * counts as a link when the route changes and stays on the origin; the page is reloaded
+ * after every probe so one click never colours the next. Blocklisted labels are never
+ * pressed, and a label is probed once per crawl no matter how many pages repeat it.
+ */
+async function probeNav(kit: BrowserToolkit, page: Page, origin: string, path: string, probed: Set<string>): Promise<Link[]> {
+  const labels = await page.locator(NAV_PROBE_SELECTOR).evaluateAll((els) => els.map((el) => (el.textContent ?? el.getAttribute("aria-label") ?? "").trim()));
+  const found: Link[] = [];
+  let probes = 0;
+  for (const text of labels) {
+    if (!text || probed.has(text) || BLOCKLIST.test(text) || probes >= MAX_PROBES_PER_PAGE) continue;
+    probed.add(text);
+    probes++;
+    try {
+      const control = page.locator(NAV_PROBE_SELECTOR).filter({ hasText: text }).first();
+      await control.click({ timeout: 2000 });
+      await settle(page);
+      const landed = page.url();
+      if (landed.startsWith(origin) && pathOf(landed) !== path) found.push({ href: landed, text });
+    } catch {
+      /* not clickable right now: nothing to record */
+    }
+    if (pathOf(page.url()) !== path) await kit.act(page, { action: "goto", target: path }).catch(() => {});
+  }
+  return found;
+}
+
+async function pageInfo(kit: BrowserToolkit, page: Page, origin: string, probed?: Set<string>): Promise<PageInfo> {
+  const url = page.url();
+  const path = pathOf(url);
+  const links = await collectLinks(page);
+  const snapshot = await kit.snapshot(page);
+  const nodes = parseSnapshot(snapshot);
+  const title = await page.title();
+  const forms = await extractForms(page, path);
+  const buttons = nodes.filter((n) => n.role === "button").map((n) => ({ role: "button", name: n.name }));
+  if (probed) links.push(...(await probeNav(kit, page, origin, path, probed)));
+  return { url, path, title, forms, buttons, links: links.filter((l) => l.href.startsWith(origin)), gated: false, snapshot };
+}
+
+/** Keeps only same-origin links whose text isn't blocklisted and whose path isn't a logout link, returning routes. */
+export function filterLinks(links: Link[], origin: string): string[] {
   return links
     .filter((l) => l.href.startsWith(origin))
     .filter((l) => !BLOCKLIST.test(l.text))
     .filter((l) => !/logout|signout/i.test(new URL(l.href).pathname))
-    .map((l) => new URL(l.href).pathname);
+    .map((l) => pathOf(l.href));
 }
 
 /** Finds the first form with a password field, fills it, submits, and returns the steps taken plus the
@@ -75,7 +123,7 @@ async function tryLogin(
   ];
   for (const s of steps.slice(1)) if (!(await kit.act(page, s))) return null;
   await page.waitForLoadState("networkidle").catch(() => {});
-  return new URL(page.url()).pathname === loginPath ? null : { steps, loginPage };
+  return pathOf(page.url()) === loginPath ? null : { steps, loginPage };
 }
 
 export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentials; maxPages?: number; maxDepth?: number; bus?: NodeDeps["bus"] }): Promise<SiteMap> {
@@ -89,8 +137,8 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
 
   // Discover a login page first so we can log in before the crawl.
   await kit.act(page, { action: "goto", target: "/" });
-  const homeLinks = await page.locator("a[href]").evaluateAll((as) => as.map((a) => ({ href: (a as HTMLAnchorElement).href, text: (a.textContent ?? "").trim() })));
-  const candidate = homeLinks.map((h) => new URL(h.href).pathname).find((p) => /log-?in|sign-?in/i.test(p));
+  const homeLinks = await collectLinks(page);
+  const candidate = homeLinks.map((h) => pathOf(h.href)).find((p) => /log-?in|sign-?in/i.test(p));
   if (candidate) loginPath = candidate;
   // Pages reachable only from the unauthenticated nav (e.g. "/register") won't be linked once we're
   // logged in, so seed the queue with everything visible before login happens - filtered the same way
@@ -109,6 +157,7 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   for (const p of preLoginPaths) queue.push({ path: p, depth: 1 });
   if (loginPath) queue.push({ path: loginPath, depth: 1 });
   const seen = new Set<string>();
+  const probed = new Set<string>();
   while (queue.length && Object.keys(pages).length < maxPages) {
     const { path, depth } = queue.shift()!;
     if (seen.has(path) || depth > maxDepth) continue;
@@ -118,10 +167,10 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
     } catch {
       continue;
     }
-    const finalPath = new URL(page.url()).pathname;
+    const finalPath = pathOf(page.url());
     let info: PageInfo;
     try {
-      info = await pageInfo(kit, page, origin);
+      info = await pageInfo(kit, page, origin, probed);
     } catch (e) {
       const message = (e as Error).message.split("\n")[0];
       opts.bus?.log("explorer", `extraction failed for ${path}: ${message}`);
@@ -130,7 +179,11 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
     // Only the landing page's own path is ever recorded (never an alias under the pre-redirect `path`),
     // and only once - this keeps `pages` bounded to at most maxPages entries.
     if (!(finalPath in pages)) pages[finalPath] = info;
-    opts.bus?.log("explorer", `visited ${finalPath} (${info.forms.length} forms, ${info.buttons.length} buttons)`);
+    // The structured payload is what the Sources screen counts pages with; the message
+    // stays human-readable for the feed. Never make the UI parse the sentence.
+    opts.bus?.log("explorer", `visited ${finalPath} (${info.forms.length} forms, ${info.buttons.length} buttons)`, {
+      visited: finalPath, forms: info.forms.length, buttons: info.buttons.length,
+    });
     for (const p of filterLinks(info.links, origin)) {
       if (!seen.has(p)) queue.push({ path: p, depth: depth + 1 });
     }
@@ -143,7 +196,8 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   for (const path of Object.keys(pages)) {
     try {
       await anonPage.goto(origin + path, { waitUntil: "domcontentloaded" });
-      const landed = new URL(anonPage.url()).pathname;
+      await settle(anonPage);
+      const landed = pathOf(anonPage.url());
       pages[path].gated = landed !== path && loginPath !== null && landed === loginPath;
     } catch {
       /* unreachable page: leave gated=false */
@@ -155,7 +209,7 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
 
 export async function exploreNode(state: RunState, deps: NodeDeps): Promise<RunUpdate> {
   deps.bus.emit({ type: "node_start", node: "explore" });
-  const kit = await BrowserToolkit.launch({ headless: deps.headless, baseUrl: state.url, bus: deps.bus, agent: "explorer", screenshotDir: outputDir(state.runId) + "traces/explore" });
+  const kit = await BrowserToolkit.launch({ headless: deps.headless, baseUrl: state.url, bus: deps.bus, runId: state.runId, agent: "explorer", screenshotDir: outputDir(state.runId) + "traces/explore" });
   try {
     const siteMap = await crawl(kit, { credentials: state.credentials, bus: deps.bus });
     deps.bus.decision({ node: "explore", reason: `discovered ${Object.keys(siteMap.pages).length} pages, ${Object.values(siteMap.pages).filter((p) => p.gated).length} gated`, evidence: Object.keys(siteMap.pages), next: "plan", at: now() });
