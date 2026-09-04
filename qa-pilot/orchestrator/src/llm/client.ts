@@ -8,7 +8,7 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 export type LlmRequest<T> = {
   prompt: string;
   input: string;
-  schema: z.ZodType<T, any, any>;
+  schema: z.ZodType<T>;
   effort?: Effort;
   maxTokens?: number;
 };
@@ -40,7 +40,7 @@ export class AnthropicLlmClient implements LlmClient {
         max_tokens: req.maxTokens ?? 16000,
         system,
         thinking: { type: "adaptive" },
-        output_config: { effort: req.effort ?? "high", format: zodOutputFormat(req.schema as unknown as Parameters<typeof zodOutputFormat>[0]) },
+        output_config: { effort: req.effort ?? "high", format: zodOutputFormat(req.schema) },
         messages: [{ role: "user", content: input }],
       });
       if (response.stop_reason === "refusal") throw new Error(`LLM refused prompt ${req.prompt}`);

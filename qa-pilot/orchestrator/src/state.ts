@@ -44,7 +44,7 @@ export const SiteMapSchema = z.object({
   origin: z.string(),
   loginPath: z.string().nullable(),
   loginSteps: z.array(StepSchema),
-  pages: z.record(PageInfoSchema),
+  pages: z.record(z.string(), PageInfoSchema),
 });
 export type SiteMap = z.infer<typeof SiteMapSchema>;
 
@@ -81,9 +81,9 @@ export const CoverageVerdictSchema = z.object({
   score: z.number().min(0).max(1),
   gaps: z.array(CoverageGapSchema),
   untested_risk: z.array(z.object({ flow: z.string(), reason: z.string(), risk: z.enum(["low", "medium", "high"]) })),
-  checks: z.record(z.number()),   // per-check pass rate
+  checks: z.record(z.string(), z.number()),   // per-check pass rate
   prdRequirements: z.array(z.string()).default([]),
-  prdMatrix: z.record(z.array(z.string())).default({}),  // requirement -> flow ids
+  prdMatrix: z.record(z.string(), z.array(z.string())).default({}),  // requirement -> flow ids
 });
 export type CoverageVerdict = z.infer<typeof CoverageVerdictSchema>;
 
@@ -165,7 +165,7 @@ export const RunInputSchema = z.object({
   intent: z.string().optional(),
   prdText: z.string().optional(),
   maxFlows: z.number().int().positive().default(12),
-  budget: BudgetSchema.default({}),
+  budget: BudgetSchema.default({ maxLlmCalls: 200, maxMinutes: 40 }),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 

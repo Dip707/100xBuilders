@@ -1,9 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
-// zodOutputFormat (used by AnthropicLlmClient) requires zod/v4-shaped schemas at runtime;
-// the installed zod@3.25 "classic" default export is structurally incompatible, so tests
-// that exercise AnthropicLlmClient build schemas from zod/v4 (per task-4-brief's contingency note).
-import { z as z4 } from "zod/v4";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { AnthropicLlmClient, FakeLlmClient } from "../src/llm/client.js";
 import { loadPrompt } from "../src/llm/prompts.js";
 
@@ -31,10 +28,16 @@ describe("loadPrompt", () => {
   });
 });
 
+describe("zodOutputFormat", () => {
+  it("builds a json_schema output format from a plain zod schema without throwing", () => {
+    const format = zodOutputFormat(z.object({ answer: z.number() }));
+    expect(format).toBeTypeOf("object");
+    expect(format).toHaveProperty("type", "json_schema");
+  });
+});
+
 describe("AnthropicLlmClient", () => {
-  // Cast through unknown: zod/v4's ZodObject isn't structurally assignable to the zod-v3-typed
-  // `z.ZodType<T, any, any>` that LlmRequest declares, even though both validate correctly at runtime.
-  const schema = z4.object({ answer: z4.number() }) as unknown as z.ZodType<{ answer: number }, any, any>;
+  const schema = z.object({ answer: z.number() });
 
   it("throws immediately on refusal without retrying", async () => {
     const create = vi.fn().mockResolvedValue({ stop_reason: "refusal", content: [] });
