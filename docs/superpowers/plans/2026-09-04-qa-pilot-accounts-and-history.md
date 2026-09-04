@@ -2832,11 +2832,10 @@ export function middleware(req: NextRequest) {
     url.pathname = "/login";
     return NextResponse.redirect(url);
   }
-  if (hasCookie && isPublic) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/";
-    return NextResponse.redirect(url);
-  }
+  // Deliberately NO "has cookie and on a public path -> redirect to /" rule (Ruling 15).
+  // Middleware cannot tell a valid cookie from a stale one, so that rule created a loop:
+  // AuthProvider gets a 401 and sends the visitor to /login, middleware sees a present
+  // cookie and sends them back to /, forever, and they can never reach the login form.
   return NextResponse.next();
 }
 
