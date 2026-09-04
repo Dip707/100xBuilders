@@ -19,6 +19,7 @@
 - `strict: true` everywhere. No `any` without a written reason in a comment.
 - Only one new runtime dependency is authorised: `mongodb`. Passwords use `node:crypto` scrypt. No shadcn, no Radix, no bcrypt, no argon2, no auth framework.
 - Env vars, exact names: `QA_PILOT_MONGO_URL` (required, no default), `QA_PILOT_MONGO_DB` (default `qa_pilot`), `QA_PILOT_UI_ORIGIN` (default `http://localhost:3000`).
+- **Ruling 4:** `QA_PILOT_MONGO_URL` is canonical, but the store falls back to `MONGO_URI` because the operator's existing `qa-pilot/.env` holds the real Atlas string under that name. Resolution order: `QA_PILOT_MONGO_URL ?? MONGO_URI`.
 - Cookie name, exact: `qa_pilot_session`. Attributes `httpOnly`, `sameSite=Lax`, `path=/`, `maxAge` 30 days, `secure` unless the request host is localhost.
 - Session expiry: 30 days. Session cache TTL: 30 seconds. Login throttle: 10 attempts per 5 minutes per lowercased email. Stale-heartbeat threshold: 5 minutes.
 - scrypt parameters, exact: `N=16384, r=8, p=1`, 16-byte salt, 64-byte derived key.
@@ -482,7 +483,9 @@ function toRecord(doc: RunDoc): RunRecord {
 }
 
 export async function mongoStore(opts: { url?: string; db?: string } = {}): Promise<Store> {
-  const url = opts.url ?? process.env.QA_PILOT_MONGO_URL;
+  // QA_PILOT_MONGO_URL is canonical; MONGO_URI is accepted because that is the name the
+  // operator's existing qa-pilot/.env already uses for the Atlas string (Ruling 4).
+  const url = opts.url ?? process.env.QA_PILOT_MONGO_URL ?? process.env.MONGO_URI;
   if (!url) throw new Error("QA_PILOT_MONGO_URL is not set. Put the Atlas connection string in qa-pilot/.env");
   const dbName = opts.db ?? process.env.QA_PILOT_MONGO_DB ?? "qa_pilot";
   const db = (await client(url)).db(dbName);
@@ -593,7 +596,7 @@ Run: `npm test -w orchestrator -- store`
 Expected: PASS, memory pass only, Mongo skipped.
 
 Run: `QA_PILOT_MONGO_URL="$(grep -m1 '^QA_PILOT_MONGO_URL=' ../.env | cut -d= -f2-)" npm test -w orchestrator -- store`
-Expected: PASS, both passes, 20 tests. If this fails with a server-selection timeout, the Atlas IP allowlist is the first thing to check.
+Expected: PASS, both passes, 17 tests (7 contract tests per store implementation, plus 3 withDerivedStatus tests). If this fails with a server-selection timeout, the Atlas IP allowlist is the first thing to check.
 
 - [ ] **Step 7: Commit**
 
@@ -1292,7 +1295,9 @@ git commit -m "qa-pilot: signup, login, logout, and me routes with a login throt
 
 **Interfaces:**
 - Consumes: `Store`, `RunRecord` from Task 1.
-- Produces: `startRun(input: RunInput, opts?: { headless?: boolean; llm?: LlmClient; store?: Store }): Promise<{ runId: string; done: Promise<RunState> }>`, `summarise(state: RunState, startedAt: string, finishedAt?: string): Partial<RunRecord>`. `RunInput` now requires `userId: string`.
+- Produces: `StartRunInputSchema` and `type StartRunInput = RunInput & { userId: string }` from state.ts; `startRun(input: StartRunInput, opts?: { headless?: boolean; llm?: LlmClient; store?: Store }): Promise<{ runId: string; done: Promise<RunState> }>`; `summarise(state: RunState, startedAt: string, finishedAt?: string): Partial<RunRecord>`.
+
+**Ruling 1 (binding — overrides the spec on this point).** Do NOT add `userId` to `RunInputSchema`. `initialState` calls `RunInputSchema.parse`, and 25 existing `initialState(...)` call sites across 13 test files pass no `userId`; making it required there breaks all of them. Add a sibling schema instead. `initialState` and its 25 call sites stay untouched.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1421,28 +1426,24 @@ import { initialState, type RunState } from "../src/state.js";
 Run: `npm test -w orchestrator -- recording`
 Expected: FAIL, `summarise` is not exported from `run.js`.
 
-- [ ] **Step 3: Add `userId` to `RunInputSchema`**
+- [ ] **Step 3: Add a `StartRunInputSchema` beside `RunInputSchema`**
 
-In `orchestrator/src/state.ts`, change the run input schema:
+In `orchestrator/src/state.ts`, leave `RunInputSchema` and `initialState` **exactly as they are** and append:
 
 ```ts
-// ---------- Run input ----------
-export const RunInputSchema = z.object({
-  runId: z.string(),
-  // A run belongs to an account. Deliberately part of the input contract and deliberately
-  // NOT part of RunStateAnnotation: the graph has no interest in who owns a run, and
-  // adding it to graph state would widen the checkpointed payload for nothing.
-  userId: z.string().min(1),
-  url: z.string().url(),
-  credentials: CredentialsSchema.optional(),
-  intent: z.string().optional(),
-  prdText: z.string().optional(),
-  maxFlows: z.number().int().positive().default(12),
-  budget: BudgetSchema.default({ maxLlmCalls: 200, maxMinutes: 40 }),
-});
+/**
+ * What `startRun` accepts: a run input plus the account that owns the run.
+ *
+ * Deliberately a sibling of RunInputSchema rather than a field on it. `initialState`
+ * parses RunInputSchema and is called from a couple of dozen node-level tests that have
+ * no account and no need for one, so requiring userId there would be pure churn. It is
+ * equally deliberately absent from RunStateAnnotation: the graph has no interest in who
+ * owns a run, and putting it in graph state would widen the checkpointed payload for
+ * nothing.
+ */
+export const StartRunInputSchema = RunInputSchema.extend({ userId: z.string().min(1) });
+export type StartRunInput = z.infer<typeof StartRunInputSchema>;
 ```
-
-`initialState` takes `{ runId: string; url: string } & Partial<RunInput>` and calls `RunInputSchema.parse(input)`, so it now needs `userId` present in whatever it is handed. Change its parameter type to `{ runId: string; url: string; userId: string } & Partial<RunInput>` and leave the body alone: `userId` is parsed and then simply not copied into the returned state.
 
 - [ ] **Step 4: Rewrite `orchestrator/src/run.ts`**
 
@@ -1451,7 +1452,7 @@ import "./env.js";
 import { getBus, type EventBus } from "./events.js";
 import { makeLlmClient, type LlmClient } from "./llm/client.js";
 import { buildGraph } from "./graph.js";
-import { initialState, outputDir, RunInputSchema, type RunInput, type RunState } from "./state.js";
+import { initialState, outputDir, StartRunInputSchema, type StartRunInput, type RunState } from "./state.js";
 import { writeOutput } from "./output.js";
 import { defaultStore } from "./store/index.js";
 import type { RunRecord, Store } from "./store/types.js";
@@ -1492,10 +1493,10 @@ async function record(store: Store, bus: EventBus, runId: string, patch: Partial
 }
 
 export async function startRun(
-  input: RunInput,
+  input: StartRunInput,
   opts: { headless?: boolean; llm?: LlmClient; store?: Store } = {},
 ): Promise<{ runId: string; done: Promise<RunState> }> {
-  const parsed = RunInputSchema.parse(input);
+  const parsed = StartRunInputSchema.parse(input);
   const store = opts.store ?? (await defaultStore());
   mkdirSync(outputDir(parsed.runId), { recursive: true });
   // heal.ts only writes heal-log.json when the heal node actually runs; many runs never hit a
@@ -1559,6 +1560,8 @@ export async function startRun(
 
 - [ ] **Step 5: Update the integration test's call site**
 
+Only `startRun` call sites change. Every `initialState(...)` call site in the test suite stays untouched, which is the whole point of Ruling 1 - do not add `userId` to any of them, including `graph.test.ts:67`.
+
 In `orchestrator/test/graph.test.ts` at line 42, add `await` and a `userId`, and inject the in-memory store so the integration test needs no database:
 
 ```ts
@@ -1573,7 +1576,7 @@ Add `import { memoryStore } from "../src/store/memory.js";` to that file's impor
 - [ ] **Step 6: Run the tests**
 
 Run: `npm test -w orchestrator -- recording`
-Expected: PASS, 5 tests.
+Expected: PASS, 6 tests.
 
 Run: `npm run typecheck -w orchestrator`
 Expected: errors only in `src/api.ts` and `src/cli.ts`, which Tasks 9 and 10 fix. Everything else clean.
@@ -1687,7 +1690,9 @@ git commit -m "qa-pilot: artifact manifest for a stored run"
 
 **Interfaces:**
 - Consumes: `authRoutes`, `requireUser`, `AuthEnv`, `Store`, `artifactManifest`, `startRun`.
-- Produces: `createApi(opts: { start: (input: RunInput) => Promise<{ runId: string }> | { runId: string }; store: Store }): Hono`.
+- Produces: `createApi(opts: { start: (input: StartRunInput) => Promise<{ runId: string }> | { runId: string }; store: Store }): Hono`.
+
+**Ruling 1 knock-on.** `userId` is NOT in `RunInputSchema`, so `BodySchema` must not try to omit it. `BodySchema` stays `RunInputSchema.omit({ runId: true, prdText: true })`, and the handler adds `userId` when it builds the `StartRunInput`.
 
 - [ ] **Step 1: Write the failing ownership test**
 
@@ -1699,6 +1704,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApi } from "../src/api.js";
+import { getBus } from "../src/events.js";
 import { memoryStore } from "../src/store/memory.js";
 import type { Store } from "../src/store/types.js";
 import { hashToken, mintToken, SESSION_COOKIE, SESSION_TTL_MS } from "../src/auth/session.js";
@@ -1718,6 +1724,9 @@ describe("run ownership", () => {
   let store: Store;
   let alice: { id: string; cookie: string };
   let bob: { id: string; cookie: string };
+  let runId: string;
+  let paths: string[];
+  let seq = 0;
 
   beforeEach(async () => {
     process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-own-")) + "/";
@@ -1725,14 +1734,23 @@ describe("run ownership", () => {
     store = memoryStore();
     alice = await account(store, "alice@example.com");
     bob = await account(store, "bob@example.com");
-    await store.insertRun({ id: "run-alice", userId: alice.id, url: "http://localhost:3005", hasPrd: false, status: "done", startedAt: new Date().toISOString() });
-    const dir = process.env.QA_PILOT_OUTPUT + "run-alice/";
+
+    // A UNIQUE id per test, deliberately (Ruling 2). getBus memoises an EventBus per runId
+    // in a module-level registry, but QA_PILOT_OUTPUT changes every beforeEach - so reusing
+    // one id would leave the bus writing to and replaying from the FIRST test's temp dir.
+    runId = `run-alice-${++seq}`;
+    await store.insertRun({ id: runId, userId: alice.id, url: "http://localhost:3005", hasPrd: false, status: "done", startedAt: new Date().toISOString() });
+    const dir = process.env.QA_PILOT_OUTPUT + runId + "/";
     mkdirSync(dir + "traces", { recursive: true });
     writeFileSync(dir + "report.html", "<h1>alice</h1>");
     writeFileSync(dir + "plan.md", "# alice plan");
-  });
 
-  const paths = ["/runs/run-alice", "/events/run-alice", "/report/run-alice", "/runs/run-alice/files/plan.md"];
+    // Terminate the event log, so /events replays and closes instead of leaving a stream
+    // pending on live events that will never arrive (Ruling 2).
+    getBus(runId).emit({ type: "done", message: "complete" });
+
+    paths = [`/runs/${runId}`, `/events/${runId}`, `/report/${runId}`, `/runs/${runId}/files/plan.md`];
+  });
 
   it("lets the owner through on every run-scoped route", async () => {
     const app = createApi({ start: () => ({ runId: "x" }), store });
@@ -1763,7 +1781,7 @@ describe("run ownership", () => {
     const app = createApi({ start: () => ({ runId: "x" }), store });
 
     const mine = await app.request(`${ORIGIN}/runs`, { headers: { cookie: alice.cookie } });
-    expect((await mine.json()).runs.map((r: { id: string }) => r.id)).toEqual(["run-alice"]);
+    expect((await mine.json()).runs.map((r: { id: string }) => r.id)).toEqual([runId]);
 
     const theirs = await app.request(`${ORIGIN}/runs`, { headers: { cookie: bob.cookie } });
     expect((await theirs.json()).runs.map((r: { id: string }) => r.id)).toEqual(["run-bob"]);
@@ -1771,9 +1789,9 @@ describe("run ownership", () => {
 
   it("returns the run record with its artifact manifest", async () => {
     const app = createApi({ start: () => ({ runId: "x" }), store });
-    const res = await app.request(`${ORIGIN}/runs/run-alice`, { headers: { cookie: alice.cookie } });
+    const res = await app.request(`${ORIGIN}/runs/${runId}`, { headers: { cookie: alice.cookie } });
     const body = await res.json();
-    expect(body.run).toMatchObject({ id: "run-alice", status: "done" });
+    expect(body.run).toMatchObject({ id: runId, status: "done" });
     expect(body.manifest.hasReport).toBe(true);
     expect(body.manifest.files).toContain("plan.md");
   });
@@ -1815,7 +1833,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
 import { z } from "zod";
 import { getBus } from "./events.js";
-import { outputDir, RunInputSchema, type RunInput } from "./state.js";
+import { outputDir, RunInputSchema, type StartRunInput } from "./state.js";
 import { startRun, newRunId } from "./run.js";
 import { defaultStore } from "./store/index.js";
 import type { RunRecord, Store } from "./store/types.js";
@@ -1823,7 +1841,9 @@ import { authRoutes } from "./auth/routes.js";
 import { requireUser, type AuthEnv } from "./auth/middleware.js";
 import { artifactManifest } from "./runs/manifest.js";
 
-const BodySchema = RunInputSchema.omit({ runId: true, prdText: true, userId: true }).extend({ prd: z.string().optional() });
+// userId is not part of RunInputSchema (Ruling 1), so there is nothing to omit for it here;
+// the handler supplies it from the session when it builds the StartRunInput.
+const BodySchema = RunInputSchema.omit({ runId: true, prdText: true }).extend({ prd: z.string().optional() });
 
 const MIME: Record<string, string> = { html: "text/html", png: "image/png", zip: "application/zip", json: "application/json", md: "text/markdown", ts: "text/plain", jsonl: "text/plain" };
 
@@ -1834,7 +1854,7 @@ function isValidRunId(runId: string): boolean {
 }
 
 export function createApi(opts: {
-  start: (input: RunInput) => Promise<{ runId: string }> | { runId: string };
+  start: (input: StartRunInput) => Promise<{ runId: string }> | { runId: string };
   store: Store;
 }) {
   const app = new Hono<AuthEnv>();
@@ -1958,7 +1978,7 @@ if (process.argv[1] && process.argv[1].endsWith("api.ts")) {
 }
 ```
 
-Two things to be careful about here.
+Also drop the now-stale note about omitting `userId`: three things to be careful about here.
 
 The `/report/:runId` and `/runs/:runId/files/*` guards keep `isValidRunId` inside `ownedRun`, so the existing 400-versus-404 behaviour for a malformed id changes to a flat 404. That is intentional and the api test is updated for it in Step 4: a malformed id is no longer distinguishable from an id that is not yours, which is the same reasoning as 404-not-403.
 
@@ -2622,7 +2642,7 @@ export function feedRows(events: RunEvent[]): RunEvent[] {
 - [ ] **Step 5: Run the tests**
 
 Run: `npm test -w ui`
-Expected: PASS, 14 tests.
+Expected: PASS, 13 tests.
 
 Run: `npm test` from the repo root
 Expected: PASS across orchestrator, mini-shop, and ui.
@@ -4425,6 +4445,7 @@ QA_PILOT_MODEL=claude-opus-5
 QA_PILOT_HEADLESS=0
 QA_PILOT_API_PORT=4000
 # MongoDB Atlas connection string. Never commit the real value; .env is gitignored.
+# MONGO_URI is also accepted as a fallback, for .env files that already use that name.
 QA_PILOT_MONGO_URL=mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true&w=majority
 QA_PILOT_MONGO_DB=qa_pilot
 QA_PILOT_UI_ORIGIN=http://localhost:3000
