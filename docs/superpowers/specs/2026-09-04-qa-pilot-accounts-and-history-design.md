@@ -397,7 +397,8 @@ The Atlas URL is a live credential: it goes in `qa-pilot/.env`, which is already
 
 Two existing files need edits rather than additions.
 `test/api.test.ts` gains an injected `memoryStore` and an authenticated-request helper; its traversal and format assertions are kept verbatim, since those guards are unchanged.
-`test/graph.test.ts` has two `startRun` call sites that need `await` now that the function is async.
+`test/graph.test.ts` has one `startRun` call site, at line 42, that needs `await` now that the function is async.
+The only other call sites are `src/api.ts` and `src/cli.ts`, which change as part of this work anyway.
 
 The `ui` workspace has no test runner today.
 Vitest is added there for the `lib/derive.ts` tests only, and the root `test` script is extended to include it.
