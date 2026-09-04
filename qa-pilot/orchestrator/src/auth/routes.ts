@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { EmailTakenError, normaliseEmail, type Store, type User } from "../store/types.js";
-import { hashPassword, verifyPassword } from "./password.js";
+import { dummyVerifyHash, hashPassword, verifyPassword } from "./password.js";
 import { SESSION_TTL_MS, clearSessionCookie, hashToken, mintToken, readSessionCookie, setSessionCookie } from "./session.js";
 import { evictSession, requireUser, type AuthEnv } from "./middleware.js";
 import { checkThrottle, clearThrottle } from "./throttle.js";
@@ -49,10 +49,13 @@ export function authRoutes(store: Store): Hono<AuthEnv> {
     }
 
     const found = await store.findUserByEmail(parsed.data.email);
-    const ok = found ? await verifyPassword(parsed.data.password, found.passwordHash) : false;
+    // Always run one derivation, against this account's hash or a dummy, so an unknown
+    // address costs the same as a wrong password (see dummyVerifyHash).
+    const stored = found?.passwordHash ?? (await dummyVerifyHash());
+    const passwordMatches = await verifyPassword(parsed.data.password, stored);
     // One message and one status for both "no such account" and "wrong password", so the
     // endpoint does not disclose which addresses are registered.
-    if (!found || !ok) return c.json({ error: "invalid email or password" }, 401);
+    if (!found || !passwordMatches) return c.json({ error: "invalid email or password" }, 401);
 
     clearThrottle(key);
     setSessionCookie(c, await issueSession(store, found.id));

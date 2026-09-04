@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hashPassword, verifyPassword, UNUSABLE_PASSWORD_HASH } from "../src/auth/password.js";
+import { dummyVerifyHash, hashPassword, verifyPassword, UNUSABLE_PASSWORD_HASH } from "../src/auth/password.js";
 
 describe("password", () => {
   it("round trips a correct password", async () => {
@@ -40,5 +40,17 @@ describe("password", () => {
     // Node's default scrypt maxmem (32MiB) and makes the derivation reject.
     const nExceedsMaxmem = `scrypt$N=1048576,r=8,p=1$${salt}$${key}`;
     await expect(verifyPassword("anything", nExceedsMaxmem)).resolves.toBe(false);
+  });
+
+  it("dummyVerifyHash returns a real, memoised scrypt hash", async () => {
+    // Must parse as a genuine scrypt hash (not UNUSABLE_PASSWORD_HASH), so verifying against
+    // it forces a real key derivation and costs the same as a wrong-password attempt.
+    const a = await dummyVerifyHash();
+    expect(a).toMatch(/^scrypt\$N=16384,r=8,p=1\$/);
+
+    // Memoised: derived once, not per call/request, so repeat logins for unknown addresses
+    // don't each pay for a fresh dummy hash on top of the dummy verification itself.
+    const b = await dummyVerifyHash();
+    expect(b).toBe(a);
   });
 });

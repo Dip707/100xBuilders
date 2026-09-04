@@ -21,6 +21,23 @@ export async function hashPassword(plain: string): Promise<string> {
   return `scrypt$N=${PARAMS.N},r=${PARAMS.r},p=${PARAMS.p}$${salt.toString("base64")}$${key.toString("base64")}`;
 }
 
+let dummy: Promise<string> | undefined;
+
+/**
+ * A valid, parseable hash of a value nobody can guess. Verifying a submitted password
+ * against it forces a real scrypt derivation, so a login attempt for an address that has
+ * no account costs the same as one for an address that does. Without this, the identical
+ * 401 body that /login returns in both cases is undone by a measurable timing difference,
+ * because scrypt dominates the request.
+ *
+ * Deliberately NOT `UNUSABLE_PASSWORD_HASH`: that value fails to parse and returns false
+ * before any derivation runs, which is exactly the cost asymmetry being closed here.
+ */
+export function dummyVerifyHash(): Promise<string> {
+  dummy ??= hashPassword(randomBytes(32).toString("hex"));
+  return dummy;
+}
+
 export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
   const parsed = parse(stored);
   if (!parsed) return false;
