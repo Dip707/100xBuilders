@@ -35,6 +35,17 @@ describe("renderReport", () => {
     expect(md).toContain("| checkout-003 | Apply coupon | failed | defect (0.9) |");
     expect(md).toContain("R1 login");
   });
+
+  it("escapes untrusted text so it cannot corrupt tables or inject HTML", () => {
+    const s = sample();
+    s.plan[1] = { ...s.plan[1], title: "Login | Logout <b>x</b>\nnext" };
+    s.results!.tests[1] = { ...s.results!.tests[1], title: "Login | Logout <b>x</b>\nnext" };
+    s.defects[0] = { ...s.defects[0], evidence: ["<script>alert(1)</script>"] };
+    const md = renderReport(s);
+    expect(md).toContain("| checkout-003 | Login \\| Logout &lt;b&gt;x&lt;/b&gt; next | failed | defect (0.9) |");
+    expect(md).toContain("&lt;script&gt;");
+    expect(md).not.toContain("<script>");
+  });
 });
 
 describe("reportNode", () => {
@@ -47,5 +58,15 @@ describe("reportNode", () => {
     expect(readFileSync(dir + "report.html", "utf8")).toContain("<h2");
     expect(JSON.parse(readFileSync(dir + "defects.json", "utf8"))).toHaveLength(1);
     expect(bus.replay().some((e) => e.type === "done")).toBe(true);
+  });
+
+  it("does not let untrusted evidence text reach report.html as raw HTML", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-report-")) + "/";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const s = sample();
+    s.defects[0] = { ...s.defects[0], evidence: ["<script>alert(1)</script>"] };
+    await reportNode(s, { bus, llm: new FakeLlmClient({}) });
+    const dir = process.env.QA_PILOT_OUTPUT + "r/";
+    expect(readFileSync(dir + "report.html", "utf8")).not.toContain("<script>");
   });
 });
