@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
@@ -112,5 +112,24 @@ describe("healNode", () => {
     expect(update.testsToRun).toEqual([]);
     expect((update.classifications as Classification[])[0].class).toBe("defect");
     expect(update.defects).toHaveLength(1);
+  }, 120_000);
+
+  it("isolates a per-target failure (missing spec file) instead of letting it escape healNode", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-heal3-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
+    const bogusFile = process.env.QA_PILOT_OUTPUT + "r/tests/does-not-exist.spec.ts";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const llm = new FakeLlmClient({ heal: { role: "button", name: "Complete purchase", reason: "same submit control, renamed", confidence: 0.9 } });
+    const failed: TestResult = { id: "checkout-002", file: bogusFile, title: "Place order", status: "failed", error: "x", failingStep: 6, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
+    const classification: Classification = { test: "checkout-002", class: "script", confidence: 0.9, evidence: [], action: "heal" };
+    const state = { ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow], results: { tests: [failed], at: "" }, classifications: [classification] };
+    const update = await healNode(state, { bus, llm, headless: true });
+    expect(update.testsToRun).toEqual([]);
+    const updatedClassification = (update.classifications as Classification[])[0];
+    expect(updatedClassification.class).toBe("script");
+    expect(updatedClassification.action).toBe("heal");
+    const events = bus.replay();
+    expect(events.some((e) => e.type === "error" && e.node === "heal")).toBe(true);
+    expect(existsSync(process.env.QA_PILOT_OUTPUT + "r/heal-log.json")).toBe(true);
   }, 120_000);
 });
