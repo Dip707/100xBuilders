@@ -18,12 +18,15 @@ export interface LlmClient {
   calls: number;
 }
 
+type MinimalAnthropicClient = { messages: { create: Anthropic["messages"]["create"] } };
+
 export class AnthropicLlmClient implements LlmClient {
   calls = 0;
-  private client = new Anthropic();
+  private client: MinimalAnthropicClient;
   private model: string;
-  constructor(private opts: { model?: string; bus?: EventBus } = {}) {
+  constructor(private opts: { model?: string; bus?: EventBus; client?: MinimalAnthropicClient } = {}) {
     this.model = opts.model ?? process.env.QA_PILOT_MODEL ?? "claude-opus-5";
+    this.client = opts.client ?? new Anthropic();
   }
   async complete<T>(req: LlmRequest<T>): Promise<T> {
     const system = loadPrompt(req.prompt);
@@ -32,7 +35,7 @@ export class AnthropicLlmClient implements LlmClient {
       this.calls++;
       const input = lastError ? `${req.input}\n\nYour previous answer failed validation: ${lastError}. Fix it.` : req.input;
       this.opts.bus?.log("llm", `call ${req.prompt} (attempt ${attempt + 1})`, { chars: input.length });
-      const response = await this.client.messages.parse({
+      const response = await this.client.messages.create({
         model: this.model,
         max_tokens: req.maxTokens ?? 16000,
         system,
@@ -41,9 +44,27 @@ export class AnthropicLlmClient implements LlmClient {
         messages: [{ role: "user", content: input }],
       });
       if (response.stop_reason === "refusal") throw new Error(`LLM refused prompt ${req.prompt}`);
-      if (response.parsed_output != null) return response.parsed_output as T;
-      const text = response.content.find((b) => b.type === "text");
-      lastError = `unparseable output: ${text && "text" in text ? text.text.slice(0, 300) : "no text"}`;
+
+      const textBlocks = response.content.filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text");
+      const text = textBlocks.map((b) => b.text).join("");
+      if (!text) {
+        lastError = "no text content in response";
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        lastError = `invalid JSON: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`;
+        continue;
+      }
+      const result = req.schema.safeParse(parsed);
+      if (result.success) return result.data;
+      lastError = result.error.issues
+        .slice(0, 1)
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; ")
+        .slice(0, 300);
     }
     throw new Error(`LLM output for ${req.prompt} failed validation twice: ${lastError}`);
   }

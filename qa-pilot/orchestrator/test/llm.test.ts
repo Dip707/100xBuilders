@@ -1,6 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
-import { FakeLlmClient } from "../src/llm/client.js";
+// zodOutputFormat (used by AnthropicLlmClient) requires zod/v4-shaped schemas at runtime;
+// the installed zod@3.25 "classic" default export is structurally incompatible, so tests
+// that exercise AnthropicLlmClient build schemas from zod/v4 (per task-4-brief's contingency note).
+import { z as z4 } from "zod/v4";
+import { AnthropicLlmClient, FakeLlmClient } from "../src/llm/client.js";
 import { loadPrompt } from "../src/llm/prompts.js";
 
 describe("FakeLlmClient", () => {
@@ -24,5 +28,41 @@ describe("FakeLlmClient", () => {
 describe("loadPrompt", () => {
   it("loads a prompt file", () => {
     expect(loadPrompt("_smoke")).toContain("smoke");
+  });
+});
+
+describe("AnthropicLlmClient", () => {
+  // Cast through unknown: zod/v4's ZodObject isn't structurally assignable to the zod-v3-typed
+  // `z.ZodType<T, any, any>` that LlmRequest declares, even though both validate correctly at runtime.
+  const schema = z4.object({ answer: z4.number() }) as unknown as z.ZodType<{ answer: number }, any, any>;
+
+  it("throws immediately on refusal without retrying", async () => {
+    const create = vi.fn().mockResolvedValue({ stop_reason: "refusal", content: [] });
+    const client = new AnthropicLlmClient({ client: { messages: { create } } as any });
+    await expect(client.complete({ prompt: "_smoke", input: "x", schema })).rejects.toThrow(/refused/);
+    expect(client.calls).toBe(1);
+  });
+
+  it("retries once on invalid output, appending the validation error, then succeeds", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ answer: "nope" }) }] })
+      .mockResolvedValueOnce({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ answer: 42 }) }] });
+    const client = new AnthropicLlmClient({ client: { messages: { create } } as any });
+    const out = await client.complete({ prompt: "_smoke", input: "x", schema });
+    expect(out.answer).toBe(42);
+    expect(client.calls).toBe(2);
+    const secondCallArgs = create.mock.calls[1]![0];
+    expect(secondCallArgs.messages[0].content).toContain("failed validation");
+  });
+
+  it("throws after two failed validation attempts", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ answer: "nope" }) }] })
+      .mockResolvedValueOnce({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ answer: "still nope" }) }] });
+    const client = new AnthropicLlmClient({ client: { messages: { create } } as any });
+    await expect(client.complete({ prompt: "_smoke", input: "x", schema })).rejects.toThrow(/failed validation twice/);
+    expect(client.calls).toBe(2);
   });
 });
