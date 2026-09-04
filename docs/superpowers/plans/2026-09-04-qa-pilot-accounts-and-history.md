@@ -3446,8 +3446,8 @@ const NAV = [
 ] as const;
 
 const REFERENCE = [
-  { href: "https://github.com/PradeepKundekar0101/100xBuilders/blob/main/qa-pilot/ARCHITECTURE.md", label: "Architecture" },
-  { href: "https://github.com/PradeepKundekar0101/100xBuilders/blob/main/qa-pilot/README.md", label: "Documentation" },
+  { href: "https://github.com/Dip707/100xBuilders/blob/main/qa-pilot/ARCHITECTURE.md", label: "Architecture" },
+  { href: "https://github.com/Dip707/100xBuilders/blob/main/qa-pilot/README.md", label: "Documentation" },
 ] as const;
 
 export function Sidebar() {
