@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { startRun, newRunId } from "./run.js";
 import { getBus } from "./events.js";
 import { outputDir, type RunInput } from "./state.js";
+import { defaultStore } from "./store/index.js";
+import { ensureLocalUser } from "./auth/local-account.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -34,9 +36,13 @@ bus.subscribe((e) => {
   else if (e.type === "agent_log" && e.agent !== "runner") console.log(`[${e.agent}] ${e.message}`);
 });
 
-const { done } = startRun(
+const store = await defaultStore();
+const localUser = await ensureLocalUser(store);
+
+const { done } = await startRun(
   {
     runId,
+    userId: localUser.id,
     url,
     intent: values.intent,
     prdText: values.prd ? readFileSync(values.prd, "utf8") : undefined,
@@ -46,7 +52,7 @@ const { done } = startRun(
     // static RunInput type resolves those as required, so cast the empty input.
     budget: {} as RunInput["budget"],
   },
-  { headless: values.headless || process.env.QA_PILOT_HEADLESS === "1" },
+  { headless: values.headless || process.env.QA_PILOT_HEADLESS === "1", store },
 );
 let final;
 try {
