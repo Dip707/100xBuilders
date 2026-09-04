@@ -43,7 +43,7 @@ Outputs land in `output/<run_id>/`: `plan.md`, `plan.json`, `coverage.json`, `te
 7. Open the report: coverage, heals, defects, untested risk, decision timeline.
 8. `./demo.sh reset` afterwards.
 
-A screenshot of a live UI run:
+A screenshot of the live UI during a fake-LLM run that stops at planning, showing the pipeline strip, agent feed, browser thumbnail, decisions, results, and report panels; a full-run screenshot is pending a real API key.
 
 ![qa-pilot UI](docs/ui.png)
 

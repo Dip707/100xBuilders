@@ -7,7 +7,7 @@ flowchart LR
   evaluate_coverage -- "score >= 0.75" --> generate
   generate --> run --> classify
   classify -- "script, attempts < 2" --> heal --> run
-  classify -- "flaky, reruns < 2" --> run
+  classify -- "flaky, reruns < 2" --> prepareRerun --> run
   classify -- "done" --> report
   any -- "budget exceeded" --> report
 ```
@@ -46,11 +46,12 @@ The API replays `events.jsonl` then streams live over SSE.
 | M2 generate + run | `npm run qa-pilot -- run http://localhost:3005 --username demo@shop.test --password demo1234` | pending: requires ANTHROPIC_API_KEY; run the command and record the result |
 | M3 heal + escalate | `./demo.sh rename && ./demo.sh coupon` then `npm run qa-pilot -- run http://localhost:3005 --username demo@shop.test --password demo1234 --run-id m3` | pending: requires ANTHROPIC_API_KEY; run the command and record the result |
 | M4 coverage loop | `npm run qa-pilot -- run http://localhost:3005 --username demo@shop.test --password demo1234 --max-flows 4 --run-id m4` | pending: requires ANTHROPIC_API_KEY; run the command and record the result |
-| M5 UI + report | UI run | verified: `docs/ui.png` is a screenshot of a live UI run against mini-shop with a fake LLM |
+| M5 UI + report | UI run | verified live on a partial run (fake LLM stops at planning); full-run screenshot pending a real API key |
 | M6 demo target | mini-shop with three chaos toggles | verified: `renameCheckoutButton`, `breakCoupon`, `cosmeticChange` all work via `POST /__chaos`, toggled by `demo.sh` |
 
 M1 through M4 need a real `ANTHROPIC_API_KEY` in `.env` to execute; this machine only has the placeholder key from `.env.example`, so those runs have not been recorded here.
 Two automated tests already exercise the scenarios M1 through M3 describe, end to end, with a fake LLM standing in for Claude:
-`orchestrator/test/graph.test.ts` runs the full graph (explore, plan with a canned set of flows, coverage, generate, run, classify, report) against mini-shop, breaks the coupon endpoint, and asserts the coupon test is classified `defect` with the 500 in evidence and escalated.
+`orchestrator/test/graph.test.ts` runs the full graph (explore, plan with a canned set of flows, coverage, generate, run, classify, report) against mini-shop, breaks the coupon endpoint, and asserts the coupon test (checkout-001) is classified `defect` with confidence >= 0.8 and that a defect ticket exists.
+The 500 response is captured by the runner's network annotations and weighted by the classifier's signal function.
 `orchestrator/test/heal.test.ts` renames the checkout button and asserts `healNode` patches the locator while `guardExpects` keeps every `expect()` line unchanged.
 Whoever runs M1 through M4 with a real key should fill in the Result column above with the actual flow count, categories, pass rate, heal diff, defect evidence, and the two coverage scores, and should not hand-edit the generated test files if M2 comes in below 80%.
