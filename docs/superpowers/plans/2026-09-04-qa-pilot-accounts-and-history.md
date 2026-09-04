@@ -408,7 +408,10 @@ Replace the `factories` line in `orchestrator/test/store.test.ts` with this bloc
 // The Mongo pass runs only when a URL is configured. It forces a database name ending in
 // "_test" and refuses to drop anything else, so a stray run can never wipe the real
 // qa_pilot database on a shared Atlas cluster.
-const mongoUrl = process.env.QA_PILOT_MONGO_URL;
+// Deliberately reads the environment WITHOUT loading .env, so the default `npm test`
+// stays hermetic and offline. MONGO_URI is accepted alongside the canonical name because
+// that is what the operator's .env already uses (Rulings 4 and 5).
+const mongoUrl = process.env.QA_PILOT_MONGO_URL ?? process.env.MONGO_URI;
 const mongoDb = `qa_pilot_contract_${process.pid}_test`;
 
 const factories: Array<[string, () => Promise<Store>]> = [["memory", async () => memoryStore()]];
@@ -595,8 +598,13 @@ export { mongoStore } from "./mongo.js";
 Run: `npm test -w orchestrator -- store`
 Expected: PASS, memory pass only, Mongo skipped.
 
-Run: `QA_PILOT_MONGO_URL="$(grep -m1 '^QA_PILOT_MONGO_URL=' ../.env | cut -d= -f2-)" npm test -w orchestrator -- store`
-Expected: PASS, both passes, 17 tests (7 contract tests per store implementation, plus 3 withDerivedStatus tests). If this fails with a server-selection timeout, the Atlas IP allowlist is the first thing to check.
+Run, from the `qa-pilot/` workspace root:
+
+```bash
+QA_PILOT_MONGO_URL="$(grep -m1 '^MONGO_URI=' .env | cut -d= -f2-)" npm test -w orchestrator -- store
+```
+
+Expected: PASS, both passes, 19 tests (8 contract tests per store implementation, plus 3 withDerivedStatus tests). If this fails with a server-selection timeout, the Atlas IP allowlist is the first thing to check.
 
 - [ ] **Step 7: Commit**
 
