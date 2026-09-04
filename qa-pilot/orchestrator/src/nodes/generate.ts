@@ -50,26 +50,32 @@ export async function generateFlowNode(state: RunState, deps: NodeDeps): Promise
     let llmCalls = 0;
 
     if (result && result.status !== "passed" && result.failingStep !== undefined) {
-      const snapPage = await kit.newPage();
-      let snapshot = "";
       try {
-        if (flow.preconditions.includes("logged_in")) for (const s of loginSteps) await kit.act(snapPage, s);
-        for (let i = 0; i < result.failingStep; i++) await kit.act(snapPage, flow.steps[i]);
-        snapshot = await kit.snapshot(snapPage);
-      } finally {
-        await snapPage.close();
-      }
-      const before = expectLines(source);
-      const repaired = await deps.llm.complete({ prompt: "self-repair", input: `SOURCE:\n${source}\n\nERROR:\n${result.error}\n\nSNAPSHOT AT STEP ${result.failingStep}:\n${snapshot}`, schema: SelfRepairSchema, effort: "medium" });
-      llmCalls = 1;
-      if (JSON.stringify(expectLines(repaired.source)) === JSON.stringify(before)) {
-        source = repaired.source;
-        writeOutput(state.runId, `tests/${flow.id}.spec.ts`, source);
-        deps.bus.log(agent, `self-repair applied: ${repaired.reason}`);
-        results = await runPlaywright({ runId: state.runId, baseUrl: state.url, loginSteps, files: [file], bus: deps.bus });
-        result = results.tests.find((t) => t.id === flow.id);
-      } else {
-        deps.bus.log(agent, "self-repair rejected: it changed an expect line");
+        const snapPage = await kit.newPage();
+        let snapshot = "";
+        try {
+          if (flow.preconditions.includes("logged_in")) for (const s of loginSteps) await kit.act(snapPage, s);
+          for (let i = 0; i < result.failingStep; i++) await kit.act(snapPage, flow.steps[i]);
+          snapshot = await kit.snapshot(snapPage);
+        } finally {
+          await snapPage.close();
+        }
+        const before = expectLines(source);
+        const repaired = await deps.llm.complete({ prompt: "self-repair", input: `SOURCE:\n${source}\n\nERROR:\n${result.error}\n\nSNAPSHOT AT STEP ${result.failingStep}:\n${snapshot}`, schema: SelfRepairSchema, effort: "medium" });
+        llmCalls = 1;
+        if (JSON.stringify(expectLines(repaired.source)) === JSON.stringify(before)) {
+          source = repaired.source;
+          writeOutput(state.runId, `tests/${flow.id}.spec.ts`, source);
+          deps.bus.log(agent, `self-repair applied: ${repaired.reason}`);
+          results = await runPlaywright({ runId: state.runId, baseUrl: state.url, loginSteps, files: [file], bus: deps.bus });
+          result = results.tests.find((t) => t.id === flow.id);
+        } else {
+          deps.bus.log(agent, "self-repair rejected: it changed an expect line");
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        deps.bus.log(agent, `self-repair failed: ${message}`);
+        deps.bus.emit({ type: "error", node: "generate", message: `self-repair failed for ${flow.id}: ${message}` });
       }
     }
     deps.bus.emit({ type: "node_end", node: "generate", message: flow.id, data: { status: result?.status } });
