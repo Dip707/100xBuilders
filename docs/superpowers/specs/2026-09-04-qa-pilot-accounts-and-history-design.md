@@ -139,7 +139,9 @@ A hash that does not parse returns false rather than throwing, which is what mak
 
 A session token is 32 bytes from `crypto.randomBytes`, base64url encoded.
 The token is sent to the browser in the `qa_pilot_session` cookie and never stored; the `sessions` document is keyed by its SHA-256 hex digest.
-Cookie attributes: `httpOnly`, `sameSite=Lax`, `path=/`, `maxAge` 30 days, and `secure` unless the request host is localhost.
+Cookie attributes: `httpOnly`, `sameSite=Lax`, `path=/`, `maxAge` 30 days, and `secure` when the request scheme is https.
+Amended during implementation (Ruling 7): `secure` was originally specified as "unless the request host is localhost", but a Host header is spoofable and hostname matching would set `secure` on a plain-http LAN demo and silently break login there.
+Deriving it from the request protocol behaves identically on `http://localhost` and is correct in both of the other cases.
 
 `sameSite=Lax` is correct here even though the UI is served from a different port.
 SameSite is evaluated on the registrable domain and ignores the port, so `localhost:3000` and `localhost:4000` are the same site and the cookie is sent, including on the `<img>` requests that load screenshots.

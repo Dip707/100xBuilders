@@ -20,7 +20,7 @@
 - Only one new runtime dependency is authorised: `mongodb`. Passwords use `node:crypto` scrypt. No shadcn, no Radix, no bcrypt, no argon2, no auth framework.
 - Env vars, exact names: `QA_PILOT_MONGO_URL` (required, no default), `QA_PILOT_MONGO_DB` (default `qa_pilot`), `QA_PILOT_UI_ORIGIN` (default `http://localhost:3000`).
 - **Ruling 4:** `QA_PILOT_MONGO_URL` is canonical, but the store falls back to `MONGO_URI` because the operator's existing `qa-pilot/.env` holds the real Atlas string under that name. Resolution order: `QA_PILOT_MONGO_URL ?? MONGO_URI`.
-- Cookie name, exact: `qa_pilot_session`. Attributes `httpOnly`, `sameSite=Lax`, `path=/`, `maxAge` 30 days, `secure` unless the request host is localhost.
+- Cookie name, exact: `qa_pilot_session`. Attributes `httpOnly`, `sameSite=Lax`, `path=/`, `maxAge` 30 days. **Ruling 7:** `secure` is derived from the request PROTOCOL (set when the scheme is https), not from the hostname - a Host header can be spoofed, and hostname matching would wrongly set Secure on a plain-http LAN demo and break login.
 - Session expiry: 30 days. Session cache TTL: 30 seconds. Login throttle: 10 attempts per 5 minutes per lowercased email. Stale-heartbeat threshold: 5 minutes.
 - scrypt parameters, exact: `N=16384, r=8, p=1`, 16-byte salt, 64-byte derived key.
 - An ownership failure returns **404, never 403**.
