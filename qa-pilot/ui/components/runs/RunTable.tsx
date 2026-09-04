@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Table, Th, Td, StatusPill, Meter } from "@/components/ui";
 import { relativeTime, formatDuration, hostOf } from "@/lib/format";
@@ -22,7 +23,13 @@ export function RunTable({ runs }: { runs: RunRecord[] }) {
           >
             <Td><StatusPill status={run.status} /></Td>
             <Td>
-              <span className="font-mono text-[13px]">{hostOf(run.url)}</span>
+              <Link
+                href={`/runs/${run.id}`}
+                onClick={(e) => e.stopPropagation()}
+                className="font-mono text-[13px] hover:underline"
+              >
+                {hostOf(run.url)}
+              </Link>
               {run.intent && <span className="ml-2 text-[13px] text-muted">{run.intent}</span>}
             </Td>
             <Td className="whitespace-nowrap text-muted">{relativeTime(run.startedAt)}</Td>

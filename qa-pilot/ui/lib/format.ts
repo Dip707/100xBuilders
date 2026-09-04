@@ -4,13 +4,17 @@ const UNITS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
 
 const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 
-/** "3 minutes ago". Falls back to a date once a run is more than a week old. */
+/**
+ * "3 minutes ago", or "in 1 hour" for a timestamp ahead of now (clock skew).
+ * Falls back to a date once a run is more than a week away in either direction.
+ */
 export function relativeTime(iso: string): string {
   const delta = Date.now() - Date.parse(iso);
   if (!Number.isFinite(delta)) return "unknown";
-  if (delta > 7 * 86_400_000) return new Date(iso).toLocaleDateString();
+  const magnitude = Math.abs(delta);
+  if (magnitude > 7 * 86_400_000) return new Date(iso).toLocaleDateString();
   let chosen: [Intl.RelativeTimeFormatUnit, number] = UNITS[0];
-  for (const unit of UNITS) if (delta >= unit[1]) chosen = unit;
+  for (const unit of UNITS) if (magnitude >= unit[1]) chosen = unit;
   return rtf.format(-Math.round(delta / chosen[1]), chosen[0]);
 }
 

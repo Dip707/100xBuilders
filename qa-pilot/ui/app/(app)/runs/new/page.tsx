@@ -39,8 +39,15 @@ export default function NewRunPage() {
   const [busy, setBusy] = useState(false);
 
   async function readPrdFile(file: File) {
-    setPrdName(file.name);
-    setPrd(await file.text());
+    setError(null);
+    try {
+      const text = await file.text();
+      setPrd(text);
+      setPrdName(file.name);
+    } catch {
+      setPrdName(null);
+      setError(`Could not read ${file.name}. Try again or paste the PRD instead.`);
+    }
   }
 
   async function submit(e: React.FormEvent) {
