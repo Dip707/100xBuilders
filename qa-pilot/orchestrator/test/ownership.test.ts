@@ -112,4 +112,65 @@ describe("run ownership", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true });
   });
+
+  it("does not leak the driver error message when /health's store probe fails", async () => {
+    // A real MongoNetworkError's .message carries the cluster hostname or IP verbatim
+    // (e.g. "getaddrinfo ENOTFOUND cluster0-xxxxx.mongodb.net"). /health is unauthenticated,
+    // so that text must never reach the response body.
+    const failingStore: Store = {
+      createUser: () => Promise.reject(new Error("unused")),
+      findUserByEmail: () => Promise.reject(new Error("unused")),
+      findUserById: () => Promise.reject(new Error("connect ECONNREFUSED 10.0.0.5:27017")),
+      createSession: () => Promise.reject(new Error("unused")),
+      findSession: () => Promise.reject(new Error("unused")),
+      deleteSession: () => Promise.reject(new Error("unused")),
+      insertRun: () => Promise.reject(new Error("unused")),
+      updateRun: () => Promise.reject(new Error("unused")),
+      touchRun: () => Promise.reject(new Error("unused")),
+      getRun: () => Promise.reject(new Error("unused")),
+      listRuns: () => Promise.reject(new Error("unused")),
+      close: () => Promise.resolve(),
+    };
+    const app = createApi({ start: () => ({ runId: "x" }), store: failingStore });
+    const res = await app.request(`${ORIGIN}/health`);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(Object.keys(body)).toEqual(["ok", "mongo"]);
+  });
+
+  describe("isValidRunId guards a run the caller genuinely owns", () => {
+    // A malformed id like "../escape" must be rejected on format grounds alone, even when
+    // an owned run record exists under that exact id - otherwise deleting isValidRunId
+    // would leave this suite green, since a missing store record also 404s.
+    let traversalId: string;
+
+    beforeEach(async () => {
+      traversalId = "../escape";
+      await store.insertRun({ id: traversalId, userId: alice.id, url: "http://localhost:3005", hasPrd: false, status: "done", startedAt: new Date().toISOString() });
+    });
+
+    it("404s /runs/:id for an owned but malformed id", async () => {
+      const app = createApi({ start: () => ({ runId: "x" }), store });
+      const res = await app.request(`${ORIGIN}/runs/${encodeURIComponent(traversalId)}`, { headers: { cookie: alice.cookie } });
+      expect(res.status).toBe(404);
+    });
+
+    it("404s /events/:id for an owned but malformed id", async () => {
+      const app = createApi({ start: () => ({ runId: "x" }), store });
+      const res = await app.request(`${ORIGIN}/events/${encodeURIComponent(traversalId)}`, { headers: { cookie: alice.cookie } });
+      expect(res.status).toBe(404);
+    });
+
+    it("404s /report/:id for an owned but malformed id", async () => {
+      const app = createApi({ start: () => ({ runId: "x" }), store });
+      const res = await app.request(`${ORIGIN}/report/${encodeURIComponent(traversalId)}`, { headers: { cookie: alice.cookie } });
+      expect(res.status).toBe(404);
+    });
+
+    it("404s /runs/:id/files/x for an owned but malformed id", async () => {
+      const app = createApi({ start: () => ({ runId: "x" }), store });
+      const res = await app.request(`${ORIGIN}/runs/${encodeURIComponent(traversalId)}/files/x`, { headers: { cookie: alice.cookie } });
+      expect(res.status).toBe(404);
+    });
+  });
 });

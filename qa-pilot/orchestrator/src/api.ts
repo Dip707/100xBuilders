@@ -47,7 +47,10 @@ export function createApi(opts: {
       await store.findUserById("__health_probe__");
       return c.json({ ok: true, mongo: "up" });
     } catch (err) {
-      return c.json({ ok: false, mongo: "down", error: (err as Error).message }, 503);
+      // Deliberately generic: /health is unauthenticated, and a driver error carries the
+      // cluster hostname or IP in its message. The detail goes to the server log instead.
+      console.error("[health] store probe failed:", err);
+      return c.json({ ok: false, mongo: "down" }, 503);
     }
   });
 
@@ -126,7 +129,14 @@ export function createApi(opts: {
     const runId = c.req.param("runId");
     if (!(await ownedRun(runId, c.get("user").id))) return c.text("not found", 404);
     const root = resolve(outputDir(runId));
-    const rel = c.req.path.split("/files/")[1] ?? "";
+    // c.req.param("*") is not populated for a trailing "*" segment in the installed Hono
+    // version (4.13.5) - it comes back undefined, so the wildcard remainder is recovered
+    // from the raw path instead. split("/files/")[1] truncates at the FIRST occurrence and
+    // mis-parses a path containing a nested "/files/" segment; indexOf + slice split on the
+    // first occurrence only, so everything after it (nested "/files/" included) is kept.
+    const marker = "/files/";
+    const markerIndex = c.req.path.indexOf(marker);
+    const rel = markerIndex === -1 ? "" : c.req.path.slice(markerIndex + marker.length);
     const path = resolve(root, decodeURIComponent(rel));
     const relPath = relative(root, path);
     if (relPath === "" || relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(path)) return c.text("not found", 404);

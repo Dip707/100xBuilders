@@ -97,6 +97,21 @@ describe("api", () => {
     expect((await app.request(`${ORIGIN}/runs/api-r2/files/..%2Fsecret.txt`, { headers: { cookie } })).status).toBe(404);
   });
 
+  it("serves a file whose path contains a nested /files/ segment", async () => {
+    // split("/files/")[1] truncates at the FIRST occurrence, so a naive implementation
+    // would resolve "a" instead of "a/files/b.png" here and either 404 or 500 (EISDIR).
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api3b-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "api-r2b/a/files", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "api-r2b/a/files/b.png", "nested-png-bytes");
+    await own("api-r2b");
+
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+    const res = await app.request(`${ORIGIN}/runs/api-r2b/files/a/files/b.png`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(await res.text()).toBe("nested-png-bytes");
+  });
+
   it("rejects sibling-run traversal via a shared runId prefix", async () => {
     process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api4-")) + "/";
     mkdirSync(process.env.QA_PILOT_OUTPUT + "run-2026-victim", { recursive: true });
