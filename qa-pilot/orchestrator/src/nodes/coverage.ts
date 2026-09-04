@@ -96,20 +96,32 @@ export async function coverageNode(state: RunState, deps: NodeDeps): Promise<Run
   let prdRequirements = state.coverage?.prdRequirements ?? [];
   const prdMatrix: Record<string, string[]> = {};
   if (state.prdText) {
-    if (prdRequirements.length === 0) {
-      const r = await deps.llm.complete({ prompt: "prd-requirements", input: state.prdText, schema: PrdRequirementsSchema, effort: "medium" });
-      llmCalls++;
-      prdRequirements = r.requirements;
+    if (state.coverage === undefined) {
+      try {
+        const r = await deps.llm.complete({ prompt: "prd-requirements", input: state.prdText, schema: PrdRequirementsSchema, effort: "medium" });
+        llmCalls++;
+        prdRequirements = r.requirements;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.bus.emit({ type: "error", node: "evaluate_coverage", message });
+        deps.bus.log("evaluator", `PRD analysis unavailable: ${message}; scoring without PRD`);
+      }
     }
     if (prdRequirements.length) {
-      const m = await deps.llm.complete({
-        prompt: "prd-matrix",
-        input: `REQUIREMENTS:\n${prdRequirements.map((r) => `- ${r}`).join("\n")}\n\nFLOWS:\n${state.plan.map((f) => `- ${f.id}: ${f.title} | steps: ${f.steps.map((s) => `${s.action} ${s.name ?? s.target ?? ""}`).join(", ")}`).join("\n")}`,
-        schema: PrdMatrixSchema,
-        effort: "medium",
-      });
-      llmCalls++;
-      for (const row of m.matrix) prdMatrix[row.requirement] = row.flow_ids;
+      try {
+        const m = await deps.llm.complete({
+          prompt: "prd-matrix",
+          input: `REQUIREMENTS:\n${prdRequirements.map((r) => `- ${r}`).join("\n")}\n\nFLOWS:\n${state.plan.map((f) => `- ${f.id}: ${f.title} | steps: ${f.steps.map((s) => `${s.action} ${s.name ?? s.target ?? ""}`).join(", ")}`).join("\n")}`,
+          schema: PrdMatrixSchema,
+          effort: "medium",
+        });
+        llmCalls++;
+        for (const row of m.matrix) prdMatrix[row.requirement] = row.flow_ids;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.bus.emit({ type: "error", node: "evaluate_coverage", message });
+        deps.bus.log("evaluator", `PRD analysis unavailable: ${message}; scoring without PRD`);
+      }
     }
   }
   const coverage = scoreCoverage(state.siteMap!, state.plan, { intent: state.intent, prdRequirements, prdMatrix });

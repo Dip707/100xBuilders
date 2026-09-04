@@ -82,6 +82,38 @@ describe("coverageNode", () => {
     const history = JSON.parse(readFileSync(outDir + "r/coverage.json", "utf8"));
     expect(history.map((h: { iteration: number }) => h.iteration)).toEqual([0, 1]);
   });
+
+  it("tolerates an LLM failure on prd-requirements and still resolves with a scored verdict", async () => {
+    const bus = new EventBus("r", outDir + "r/");
+    const llm = new FakeLlmClient({
+      "prd-requirements": () => {
+        throw new Error("boom");
+      },
+    });
+    const flows = [mk("a1", "happy", "Login works")];
+    const state = { ...initialState({ runId: "r", url: "http://x", prdText: "users can log in" }), siteMap, plan: flows, planIterations: 0 };
+    const update = await coverageNode(state, { bus, llm, headless: true });
+    expect(typeof (update.coverage as CoverageVerdict).score).toBe("number");
+    const events = bus.replay();
+    expect(events.some((e) => e.type === "error" && e.node === "evaluate_coverage")).toBe(true);
+  });
+
+  it("reuses cached prdRequirements from a prior verdict without calling the LLM", async () => {
+    const bus = new EventBus("r", outDir + "r/");
+    const llm = new FakeLlmClient({});
+    const flows = [mk("a1", "happy", "Login works")];
+    const priorVerdict: CoverageVerdict = { score: 0.5, gaps: [], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} };
+    const state = {
+      ...initialState({ runId: "r", url: "http://x", prdText: "users can log in" }),
+      siteMap,
+      plan: flows,
+      planIterations: 1,
+      coverage: priorVerdict,
+    };
+    const update = await coverageNode(state, { bus, llm, headless: true });
+    expect(llm.calls).toBe(0);
+    expect((update.coverage as CoverageVerdict).prdRequirements).toEqual([]);
+  });
 });
 
 describe("afterCoverage", () => {
