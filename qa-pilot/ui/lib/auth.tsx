@@ -21,7 +21,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     me()
       .then((u) => { if (!cancelled) setUser(u); })
-      .catch((err) => { if (!cancelled && err instanceof ApiError && err.status === 401) router.replace("/login"); })
+      .catch(async (err) => {
+        if (cancelled || !(err instanceof ApiError) || err.status !== 401) return;
+        // The cookie is stale (expired/invalid session) but still present, and it is
+        // httpOnly so only the API can clear it. Without this, middleware.ts keeps
+        // seeing a cookie on every retry to /login, and (previously) bounced the
+        // visitor straight back to /, an infinite loop that never reaches the login
+        // form. Clear it via the API before redirecting so the next load has no cookie.
+        await apiLogout().catch(() => {});
+        if (!cancelled) router.replace("/login");
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [router]);

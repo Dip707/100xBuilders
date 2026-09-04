@@ -23,11 +23,14 @@ export function middleware(req: NextRequest) {
     url.pathname = "/login";
     return NextResponse.redirect(url);
   }
-  if (hasCookie && isPublic) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/";
-    return NextResponse.redirect(url);
-  }
+  // Deliberately no "hasCookie && isPublic -> redirect to /" rule here. Middleware can
+  // only see that a cookie exists, not whether it is still valid: a visitor whose session
+  // expired keeps the cookie until the API clears it. That old rule bounced such a
+  // visitor straight back to / from /login, and AuthProvider's own redirect to /login (on
+  // a 401 from /auth/me) went right back through this middleware and got bounced again -
+  // an infinite loop that made the login form unreachable. Omitting the rule trades a
+  // cosmetic issue (an already-signed-in visitor can still see the login form) for a
+  // functional one (being unable to log in at all), which is the right side to take.
   return NextResponse.next();
 }
 
