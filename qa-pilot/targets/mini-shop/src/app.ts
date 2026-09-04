@@ -22,7 +22,7 @@ export function createApp() {
 
   app.get("/", (req, res) => res.send(v.layout("Home", v.homeView(), userOf(req))));
 
-  app.get("/login", (req, res) => res.send(v.layout("Log in", v.loginView(null, String(req.query.next ?? "/")), userOf(req))));
+  app.get("/login", (req, res) => res.send(v.layout("Log in", v.loginView(null, String(req.query.next ?? "/products")), userOf(req))));
   app.post("/login", (req, res) => {
     const { email, password, next } = req.body as Record<string, string>;
     const u = users.find((x) => x.email === email && x.password === password);
