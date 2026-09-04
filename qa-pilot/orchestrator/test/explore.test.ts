@@ -3,10 +3,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
-import { exploreNode } from "../src/nodes/explore.js";
+import { exploreNode, crawl, filterLinks } from "../src/nodes/explore.js";
 import { initialState } from "../src/state.js";
 import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
+import { BrowserToolkit } from "../src/browser/toolkit.js";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
@@ -27,5 +28,31 @@ describe("exploreNode", () => {
     expect(map.loginPath).toBe("/login");
     expect(map.loginSteps.length).toBeGreaterThanOrEqual(3);
     expect(Object.keys(map.pages).length).toBeLessThanOrEqual(30);
+  });
+
+  it("crawl() keeps pages bounded to maxPages even with the pre-login seed and redirects", async () => {
+    const kit = await BrowserToolkit.launch({ headless: true, baseUrl: shop.base });
+    try {
+      const map = await crawl(kit, {
+        credentials: { username: "demo@shop.test", password: "demo1234" },
+        maxPages: 3,
+      });
+      expect(Object.keys(map.pages).length).toBeLessThanOrEqual(3);
+    } finally {
+      await kit.close();
+    }
+  });
+});
+
+describe("filterLinks", () => {
+  it("keeps only same-origin links that aren't blocklisted or logout links", () => {
+    const origin = "https://example.test";
+    const links = [
+      { href: "https://external.test/products", text: "External" },
+      { href: "https://example.test/account", text: "Log out" },
+      { href: "https://example.test/logout", text: "Bye" },
+      { href: "https://example.test/products", text: "Products" },
+    ];
+    expect(filterLinks(links, origin)).toEqual(["/products"]);
   });
 });

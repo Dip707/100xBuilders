@@ -41,11 +41,28 @@ async function pageInfo(kit: BrowserToolkit, page: Page, origin: string): Promis
   };
 }
 
-/** Finds the first form with a password field, fills it, submits, and returns the steps taken. */
-async function tryLogin(kit: BrowserToolkit, page: Page, loginPath: string, creds: Credentials): Promise<Step[] | null> {
+/** Keeps only same-origin links whose text isn't blocklisted and whose path isn't a logout link, returning pathnames. */
+export function filterLinks(links: { href: string; text: string }[], origin: string): string[] {
+  return links
+    .filter((l) => l.href.startsWith(origin))
+    .filter((l) => !BLOCKLIST.test(l.text))
+    .filter((l) => !/logout|signout/i.test(new URL(l.href).pathname))
+    .map((l) => new URL(l.href).pathname);
+}
+
+/** Finds the first form with a password field, fills it, submits, and returns the steps taken plus the
+ *  login page's PageInfo (captured before credentials are filled, so it survives even if an authenticated
+ *  visit later redirects away from the login path). */
+async function tryLogin(
+  kit: BrowserToolkit,
+  page: Page,
+  loginPath: string,
+  origin: string,
+  creds: Credentials,
+): Promise<{ steps: Step[]; loginPage: PageInfo } | null> {
   await kit.act(page, { action: "goto", target: loginPath });
-  const forms = await extractForms(page, loginPath);
-  const form = forms.find((f) => f.fields.some((x) => x.type === "password"));
+  const loginPage = await pageInfo(kit, page, origin);
+  const form = loginPage.forms.find((f) => f.fields.some((x) => x.type === "password"));
   if (!form) return null;
   const pw = form.fields.find((x) => x.type === "password")!;
   const user = form.fields.find((x) => x !== pw && x.role === "textbox");
@@ -58,7 +75,7 @@ async function tryLogin(kit: BrowserToolkit, page: Page, loginPath: string, cred
   ];
   for (const s of steps.slice(1)) if (!(await kit.act(page, s))) return null;
   await page.waitForLoadState("networkidle").catch(() => {});
-  return new URL(page.url()).pathname === loginPath ? null : steps;
+  return new URL(page.url()).pathname === loginPath ? null : { steps, loginPage };
 }
 
 export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentials; maxPages?: number; maxDepth?: number; bus?: NodeDeps["bus"] }): Promise<SiteMap> {
@@ -72,16 +89,18 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
 
   // Discover a login page first so we can log in before the crawl.
   await kit.act(page, { action: "goto", target: "/" });
-  const homeLinks = await page.locator("a[href]").evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).href));
-  const candidate = homeLinks.map((h) => new URL(h).pathname).find((p) => /log-?in|sign-?in/i.test(p));
+  const homeLinks = await page.locator("a[href]").evaluateAll((as) => as.map((a) => ({ href: (a as HTMLAnchorElement).href, text: (a.textContent ?? "").trim() })));
+  const candidate = homeLinks.map((h) => new URL(h.href).pathname).find((p) => /log-?in|sign-?in/i.test(p));
   if (candidate) loginPath = candidate;
   // Pages reachable only from the unauthenticated nav (e.g. "/register") won't be linked once we're
-  // logged in, so seed the queue with everything visible before login happens.
-  const preLoginPaths = homeLinks.map((h) => new URL(h).pathname);
+  // logged in, so seed the queue with everything visible before login happens - filtered the same way
+  // as the main loop (same-origin, not blocklisted, not a logout link).
+  const preLoginPaths = filterLinks(homeLinks, origin);
   if (loginPath && opts.credentials) {
-    const steps = await tryLogin(kit, page, loginPath, opts.credentials);
-    if (steps) {
-      loginSteps = steps;
+    const result = await tryLogin(kit, page, loginPath, origin, opts.credentials);
+    if (result) {
+      loginSteps = result.steps;
+      pages[loginPath] = result.loginPage;
       opts.bus?.log("explorer", `logged in via ${loginPath}`);
     } else opts.bus?.log("explorer", `login attempt at ${loginPath} did not leave the page`);
   }
@@ -100,13 +119,20 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
       continue;
     }
     const finalPath = new URL(page.url()).pathname;
-    const info = await pageInfo(kit, page, origin);
-    pages[finalPath] = info;
-    if (finalPath !== path) pages[path] = { ...info, path, url: origin + path };
+    let info: PageInfo;
+    try {
+      info = await pageInfo(kit, page, origin);
+    } catch (e) {
+      const message = (e as Error).message.split("\n")[0];
+      opts.bus?.log("explorer", `extraction failed for ${path}: ${message}`);
+      continue;
+    }
+    // Only the landing page's own path is ever recorded (never an alias under the pre-redirect `path`),
+    // and only once - this keeps `pages` bounded to at most maxPages entries.
+    if (!(finalPath in pages)) pages[finalPath] = info;
     opts.bus?.log("explorer", `visited ${finalPath} (${info.forms.length} forms, ${info.buttons.length} buttons)`);
-    for (const l of info.links) {
-      const p = new URL(l.href).pathname;
-      if (!seen.has(p) && !BLOCKLIST.test(l.text) && !/logout|signout/i.test(p)) queue.push({ path: p, depth: depth + 1 });
+    for (const p of filterLinks(info.links, origin)) {
+      if (!seen.has(p)) queue.push({ path: p, depth: depth + 1 });
     }
   }
   await page.close();
