@@ -101,6 +101,7 @@ export const TestResultSchema = z.object({
   consoleErrors: z.array(z.string()).default([]),
   pageErrors: z.array(z.string()).default([]),
   tracePath: z.string().optional(),
+  videoPath: z.string().optional(),      // copied out of Playwright's output dir, which it wipes on every invocation
   durationMs: z.number().default(0),
 });
 export type TestResult = z.infer<typeof TestResultSchema>;
@@ -166,6 +167,9 @@ export const RunInputSchema = z.object({
   prdText: z.string().optional(),
   maxFlows: z.number().int().positive().default(12),
   budget: BudgetSchema.default({ maxLlmCalls: 200, maxMinutes: 40 }),
+  // When true the graph pauses after the coverage gate so the plan can be reviewed, edited
+  // and trimmed before any test is generated. Off by default: the pipeline is autonomous.
+  reviewPlan: z.boolean().default(false),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
@@ -180,6 +184,7 @@ export const RunStateAnnotation = Annotation.Root({
   prdText: Annotation<string | undefined>(),
   maxFlows: Annotation<number>(),
   budget: Annotation<z.infer<typeof BudgetSchema>>(),
+  reviewPlan: Annotation<boolean>({ reducer: (_a, b) => b, default: () => false }),
   startedAt: Annotation<string>(),
   siteMap: Annotation<SiteMap | undefined>(),
   plan: Annotation<Flow[]>({ reducer: (_a, b) => b, default: () => [] }),
@@ -213,6 +218,7 @@ export function initialState(input: { runId: string; url: string } & Partial<Run
     prdText: parsed.prdText,
     maxFlows: parsed.maxFlows,
     budget: parsed.budget,
+    reviewPlan: parsed.reviewPlan,
     startedAt: new Date().toISOString(),
     siteMap: undefined,
     plan: [],
@@ -246,7 +252,8 @@ export function initialState(input: { runId: string; url: string } & Partial<Run
  * nothing.
  */
 export const StartRunInputSchema = RunInputSchema.extend({ userId: z.string().min(1) });
-export type StartRunInput = z.infer<typeof StartRunInputSchema>;
+/** The input side of the schema: fields with defaults (budget, maxFlows, reviewPlan) stay optional for callers. */
+export type StartRunInput = z.input<typeof StartRunInputSchema>;
 
 /** Resolved on every call so tests can point QA_PILOT_OUTPUT at a temp dir. Always ends with "/". */
 export function outputDir(runId: string): string {

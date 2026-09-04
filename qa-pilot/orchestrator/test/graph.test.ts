@@ -3,9 +3,9 @@ import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
-import { startRun } from "../src/run.js";
+import { startRun, awaitingReview, submitReview } from "../src/run.js";
 import { buildGraph } from "../src/graph.js";
-import { EventBus } from "../src/events.js";
+import { EventBus, getBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
 import { memoryStore } from "../src/store/memory.js";
 import { initialState, outputDir, type Flow } from "../src/state.js";
@@ -77,4 +77,40 @@ describe("graph budget guard (fast, no browser)", () => {
     expect(final.partialReason).toMatch(/budget exceeded/);
     expect(existsSync(outputDir(runId) + "report.md")).toBe(true);
   });
+});
+
+describe("plan review gate", () => {
+  it("pauses after coverage, records awaiting_review, and generates only the flows the reviewer kept", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-graph-review-")) + "/";
+    const store = memoryStore();
+    const llm = new FakeLlmClient({ plan: { flows } });
+    const runId = "review-1";
+    const { done } = await startRun(
+      { runId, userId: "u-test", url: shop.base, credentials: { username: "demo@shop.test", password: "demo1234" }, reviewPlan: true },
+      { headless: true, llm, store },
+    );
+
+    // The gate opens once the plan has passed coverage; poll rather than sleep so the test stays quick.
+    const deadline = Date.now() + 120_000;
+    while (!awaitingReview(runId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    expect(awaitingReview(runId)).toBe(true);
+    expect((await store.getRun(runId))!.status).toBe("awaiting_review");
+    const events = getBus(runId).replay();
+    expect(events.some((e) => e.type === "node_start" && e.node === "review")).toBe(true);
+    expect(events.some((e) => e.type === "node_start" && e.node === "generate")).toBe(false);
+
+    const kept = flows.filter((f) => f.id === "auth-001" || f.id === "orders-authz-001");
+    expect(submitReview(runId, kept)).toBe(true);
+    expect(submitReview(runId, kept)).toBe(false);
+
+    const final = await done;
+    expect(final.plan.map((f) => f.id).sort()).toEqual(["auth-001", "orders-authz-001"]);
+    expect(final.results!.tests.map((t) => t.id).sort()).toEqual(["auth-001", "orders-authz-001"]);
+    expect(JSON.parse(readFileSync(outputDir(runId) + "plan.json", "utf8")).map((f: Flow) => f.id).sort()).toEqual(["auth-001", "orders-authz-001"]);
+    expect((await store.getRun(runId))!.status).toBe("done");
+    const after = getBus(runId).replay();
+    expect(after.some((e) => e.type === "node_end" && e.node === "review")).toBe(true);
+    expect(after.filter((e) => e.type === "test_start").length).toBeGreaterThan(0);
+    expect(final.results!.tests.every((t) => t.videoPath && existsSync(t.videoPath))).toBe(true);
+  }, 300_000);
 });

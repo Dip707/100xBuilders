@@ -24,7 +24,9 @@ export function expectationCode(exp: Expectation): string {
       return `await expect(${target}).toContainText(${q(exp.text_contains ?? "")});`;
     case "url_contains":
     case "url_stays":
-      return `await expect(page).toHaveURL(${re(exp.value ?? "/")});`;
+      // The planner occasionally files the path under text_contains; falling back to it
+      // keeps the assertion meaningful instead of degrading to a match-anything "/".
+      return `await expect(page).toHaveURL(${re(exp.value ?? exp.text_contains ?? "/")});`;
     case "value_equals":
       return `await expect(${target}).toHaveValue(${q(exp.value ?? "")});`;
   }
@@ -151,7 +153,7 @@ export class BrowserToolkit {
         case "url_stays": {
           await page.waitForLoadState("domcontentloaded").catch(() => {});
           const url = page.url();
-          const ok = url.includes(exp.value ?? "");
+          const ok = url.includes(exp.value ?? exp.text_contains ?? "");
           return { ok, actual: url, code };
         }
         case "value_equals": {

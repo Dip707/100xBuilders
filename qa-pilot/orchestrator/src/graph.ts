@@ -14,6 +14,9 @@ import { now, type NodeDeps } from "./nodes/deps.js";
 
 type NodeFn = (state: RunState, deps: NodeDeps) => Promise<RunUpdate>;
 
+/** The node the graph pauses in front of when a run asked for its plan to be reviewed. */
+export const REVIEW_NODE = "review";
+
 export function buildGraph(deps: NodeDeps, opts: { checkpointPath?: string } = {}) {
   /** Skips the node and marks the run partial when the budget is gone. */
   const guarded = (name: string, fn: NodeFn) => async (state: RunState): Promise<RunUpdate> => {
@@ -34,6 +37,15 @@ export function buildGraph(deps: NodeDeps, opts: { checkpointPath?: string } = {
   };
   const orReport = <T extends string>(next: T) => (state: RunState): T | "report" => (state.partial ? "report" : next);
 
+  /**
+   * A pass-through the graph is compiled to interrupt before. Its body never runs in
+   * practice: `startRun` resumes a reviewed run by writing the reviewed plan into the
+   * checkpoint *as this node's output*, which marks it executed, and emits the node's
+   * start and end events itself. It exists so the interrupt has somewhere to stand and so
+   * the edge after it can fan out to generation. Runs without review never route here.
+   */
+  const review = async (): Promise<RunUpdate> => ({});
+
   const prepareRerun = async (state: RunState): Promise<RunUpdate> => {
     const ids = state.classifications.filter((c) => c.action === "rerun").map((c) => c.test);
     const rerunAttempts: Record<string, number> = {};
@@ -49,6 +61,7 @@ export function buildGraph(deps: NodeDeps, opts: { checkpointPath?: string } = {
     .addNode("planFlows", guarded("plan", planNode))
     .addNode("evaluate_coverage", guarded("evaluate_coverage", coverageNode))
     .addNode("generateFlow", guarded("generate", generateFlowNode))
+    .addNode(REVIEW_NODE, review)
     .addNode("run", guarded("run", runNode))
     .addNode("classify", guarded("classify", classifyNode))
     .addNode("prepareRerun", prepareRerun)
@@ -65,8 +78,20 @@ export function buildGraph(deps: NodeDeps, opts: { checkpointPath?: string } = {
         deps.bus.decision({ node: "evaluate_coverage", reason: "no flows survived planning", evidence: [], next: "report", at: now() });
         return "report";
       }
+      if (state.reviewPlan) {
+        deps.bus.decision({ node: "evaluate_coverage", reason: `holding ${state.plan.length} flows for review before generation`, evidence: state.plan.map((f) => f.id), next: REVIEW_NODE, at: now() });
+        return REVIEW_NODE;
+      }
       return fanOutGenerate(state);
-    }, ["planFlows", "generateFlow", "report"])
+    }, ["planFlows", REVIEW_NODE, "generateFlow", "report"])
+    .addConditionalEdges(REVIEW_NODE, (state: RunState): string | Send[] => {
+      if (state.partial) return "report";
+      if (state.plan.length === 0) {
+        deps.bus.decision({ node: REVIEW_NODE, reason: "reviewer kept no flows", evidence: [], next: "report", at: now() });
+        return "report";
+      }
+      return fanOutGenerate(state);
+    }, ["generateFlow", "report"])
     .addConditionalEdges("generateFlow", orReport("run"), ["run", "report"])
     .addConditionalEdges("run", orReport("classify"), ["classify", "report"])
     .addConditionalEdges("classify", (state: RunState): string => {
@@ -79,7 +104,9 @@ export function buildGraph(deps: NodeDeps, opts: { checkpointPath?: string } = {
     .addEdge("report", END);
 
   const checkpointer = SqliteSaver.fromConnString(opts.checkpointPath ?? ":memory:");
-  return graph.compile({ checkpointer });
+  // The interrupt only fires when the graph actually routes to the review node, which
+  // happens solely for runs that asked for it; every other run is unaffected.
+  return graph.compile({ checkpointer, interruptBefore: [REVIEW_NODE] });
 }
 
 export type CompiledGraph = ReturnType<typeof buildGraph>;

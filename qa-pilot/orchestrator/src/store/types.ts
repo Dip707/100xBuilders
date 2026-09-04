@@ -1,7 +1,8 @@
 /** How long a `running` run may go without a heartbeat before it reads as interrupted. */
 export const STALE_HEARTBEAT_MS = 5 * 60_000;
 
-export type RunStatus = "running" | "done" | "partial" | "failed" | "interrupted";
+/** `awaiting_review` is a run paused at the plan-review gate; it has no heartbeat and never reads as interrupted. */
+export type RunStatus = "running" | "awaiting_review" | "done" | "partial" | "failed" | "interrupted";
 
 export type User = { id: string; email: string; createdAt: string };
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
@@ -95,4 +95,29 @@ describe("parseJsonReport", () => {
     expect(t.id).toBe("checkout-001");
     expect(t.failingStep).toBe(1);
   });
+});
+
+describe("runPlaywright live preview and recording", () => {
+  it("announces test_start before the result, keeps a video per test, and leaves a finished live state", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-run-live-")) + "/";
+    const runId = "live";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + `${runId}/tests`, { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + `${runId}/tests/auth-002.spec.ts`, passing);
+    const bus = new EventBus(runId, process.env.QA_PILOT_OUTPUT + `${runId}/`);
+    const results = await runPlaywright({ runId, baseUrl: shop.base, loginSteps: [], bus });
+
+    const types = bus.replay().map((e) => e.type);
+    expect(types.indexOf("test_start")).toBeGreaterThan(-1);
+    expect(types.indexOf("test_start")).toBeLessThan(types.indexOf("test_result"));
+    const start = bus.replay().find((e) => e.type === "test_start")!;
+    expect(start.data).toMatchObject({ id: "auth-002", title: "Login with wrong password shows error" });
+
+    const test = results.tests.find((t) => t.id === "auth-002")!;
+    expect(test.videoPath).toMatch(/\/traces\/videos\/auth-002\.webm$/);
+    expect(existsSync(test.videoPath!)).toBe(true);
+
+    const state = JSON.parse(readFileSync(process.env.QA_PILOT_OUTPUT + `${runId}/live/auth-002/state.json`, "utf8"));
+    expect(state.status).toBe("finished");
+    expect(existsSync(process.env.QA_PILOT_OUTPUT + `${runId}/live/auth-002/frame.jpg`)).toBe(true);
+  }, 120_000);
 });
