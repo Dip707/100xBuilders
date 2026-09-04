@@ -53,4 +53,30 @@ describe("api", () => {
     expect((await app.request("/runs/api-r2/files/nope.png")).status).toBe(404);
     expect((await app.request("/runs/api-r2/files/..%2Fsecret.txt")).status).toBe(404);
   });
+
+  it("rejects sibling-run traversal via a shared runId prefix and validates runId format", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api4-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "run-2026-victim", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "run-2026-victim/report.html", "<h1>victim</h1>");
+    const app = createApi({ start: () => ({ runId: "x" }) });
+
+    // "run-" shares a prefix with "run-2026-victim" but has no trailing separator boundary check bug.
+    const traversal = await app.request("/runs/run-/files/..%2Frun-2026-victim%2Freport.html");
+    expect(traversal.status).toBe(404);
+
+    const invalidRunId = await app.request("/runs/..%2F/files/x");
+    expect(invalidRunId.status).toBe(400);
+    expect(await invalidRunId.json()).toEqual({ error: "invalid runId" });
+
+    const positive = await app.request("/runs/run-2026-victim/files/report.html");
+    expect(positive.status).toBe(200);
+    expect(await positive.text()).toBe("<h1>victim</h1>");
+  });
+
+  it("rejects invalid runId on /events and /report", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api5-")) + "/";
+    const app = createApi({ start: () => ({ runId: "x" }) });
+    expect((await app.request("/events/..%2Fetc")).status).toBe(400);
+    expect((await app.request("/report/..%2Fetc")).status).toBe(400);
+  });
 });

@@ -4,7 +4,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, relative, isAbsolute } from "node:path";
 import { z } from "zod";
 import { getBus } from "./events.js";
 import { outputDir, RunInputSchema, type RunInput } from "./state.js";
@@ -13,6 +13,12 @@ import { startRun, newRunId } from "./run.js";
 const BodySchema = RunInputSchema.omit({ runId: true, prdText: true }).extend({ prd: z.string().optional() });
 
 const MIME: Record<string, string> = { html: "text/html", png: "image/png", zip: "application/zip", json: "application/json", md: "text/markdown", ts: "text/plain", jsonl: "text/plain" };
+
+const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+function isValidRunId(runId: string): boolean {
+  return RUN_ID_RE.test(runId) && runId !== "." && runId !== "..";
+}
 
 export function createApi(opts: { start: (input: RunInput) => { runId: string } }) {
   const app = new Hono();
@@ -27,7 +33,9 @@ export function createApi(opts: { start: (input: RunInput) => { runId: string } 
   });
 
   app.get("/events/:runId", (c) => {
-    const bus = getBus(c.req.param("runId"));
+    const runId = c.req.param("runId");
+    if (!isValidRunId(runId)) return c.json({ error: "invalid runId" }, 400);
+    const bus = getBus(runId);
     return streamSSE(c, async (stream) => {
       let id = 0;
       let finished = false;
@@ -38,7 +46,7 @@ export function createApi(opts: { start: (input: RunInput) => { runId: string } 
       if (finished) return;
       await new Promise<void>((resolveStream) => {
         const unsub = bus.subscribe((e) => {
-          void stream.writeSSE({ event: e.type, data: JSON.stringify(e), id: String(id++) });
+          stream.writeSSE({ event: e.type, data: JSON.stringify(e), id: String(id++) }).catch(() => { unsub(); resolveStream(); });
           if (e.type === "done") { unsub(); resolveStream(); }
         });
         stream.onAbort(() => { unsub(); resolveStream(); });
@@ -47,16 +55,21 @@ export function createApi(opts: { start: (input: RunInput) => { runId: string } 
   });
 
   app.get("/report/:runId", (c) => {
-    const path = outputDir(c.req.param("runId")) + "report.html";
+    const runId = c.req.param("runId");
+    if (!isValidRunId(runId)) return c.json({ error: "invalid runId" }, 400);
+    const path = outputDir(runId) + "report.html";
     if (!existsSync(path)) return c.text("report not ready", 404);
     return c.html(readFileSync(path, "utf8"));
   });
 
   app.get("/runs/:runId/files/*", (c) => {
-    const root = resolve(outputDir(c.req.param("runId")));
+    const runId = c.req.param("runId");
+    if (!isValidRunId(runId)) return c.json({ error: "invalid runId" }, 400);
+    const root = resolve(outputDir(runId));
     const rel = c.req.path.split("/files/")[1] ?? "";
     const path = resolve(root, decodeURIComponent(rel));
-    if (!path.startsWith(root) || !existsSync(path)) return c.text("not found", 404);
+    const relPath = relative(root, path);
+    if (relPath === "" || relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(path)) return c.text("not found", 404);
     const ext = path.split(".").pop() ?? "";
     return c.body(new Uint8Array(readFileSync(path)), 200, { "content-type": MIME[ext] ?? "application/octet-stream" });
   });
