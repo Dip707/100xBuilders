@@ -11,15 +11,15 @@ The orchestrator is a LangGraph.js state machine whose branch decisions are stre
 
 ## 2. Decisions taken during brainstorming
 
-| Topic | Decision | Reason |
-|---|---|---|
-| Stack | TypeScript end to end | Removes the Python to MCP to Node boundary from the hot browser loop; one language, one repo |
-| Code vs LLM split | Hybrid | Deterministic crawler and templated codegen; LLM only for planning, coverage judgement, classification rationale, and heal element choice |
-| Default model | `claude-opus-5`, configurable via `QA_PILOT_MODEL` | Best first-run pass rate on generated tests |
-| API key | `.env` file, gitignored, with `.env.example` shipped | |
-| Location | `qa-pilot/` subfolder of the shared repo | Keeps the shared repo root clean |
-| Demo target | Purpose-built mini shop in `targets/mini-shop` | Deterministic, boots in one second, bugs toggled on cue |
-| Browser view | Headed Chromium on screen plus screenshot thumbnails over SSE | Matches PRD 9.3 |
+| Topic             | Decision                                                      | Reason                                                                                                                                    |
+| ----------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| PlStack           | TypeScript end to end                                         | Removes the Python to MCP to Node boundary from the hot browser loop; one language, one repo                                              |
+| Code vs LLM split | Hybrid                                                        | Deterministic crawler and templated codegen; LLM only for planning, coverage judgement, classification rationale, and heal element choice |
+| Default model     | `claude-opus-5`, configurable via `QA_PILOT_MODEL`            | Best first-run pass rate on generated tests                                                                                               |
+| API key           | `.env` file, gitignored, with `.env.example` shipped          |                                                                                                                                           |
+| Location          | `qa-pilot/` subfolder of the shared repo                      | Keeps the shared repo root clean                                                                                                          |
+| Demo target       | Purpose-built mini shop in `targets/mini-shop`                | Deterministic, boots in one second, bugs toggled on cue                                                                                   |
+| Browser view      | Headed Chromium on screen plus screenshot thumbnails over SSE | Matches PRD 9.3                                                                                                                           |
 
 Non-goals are unchanged from the PRD: no CI integration, no fixing of application source, no hand-written tests, no cross-browser matrix.
 
@@ -84,7 +84,7 @@ Each page records title, forms (fields with role, label, name, type), buttons (r
 It also records the login fixture steps when credentials were supplied.
 
 `Flow`, `CoverageVerdict`, `Classification`, and `Defect` follow the JSON shapes in PRD sections 8.1, 8.2, 8.5, and 8.7 exactly.
-`Decision` is `{node, reason, evidence: string[], next, at}`.
+`Decision` is `{node, reason, evidence: string[], next, at}`
 
 ## 5. Graph
 
@@ -92,15 +92,15 @@ Nodes: `explore -> plan -> evaluate_coverage -> generate -> run -> classify -> h
 
 Conditional edges match PRD section 7 verbatim:
 
-| After | Condition | Next |
-|---|---|---|
-| evaluate_coverage | score >= 0.75 or planIterations >= 3 | generate |
-| evaluate_coverage | score < 0.75 | plan, with gaps injected |
-| classify | any `script` with healAttempts < 2 | heal |
-| classify | any `flaky` with rerunAttempts < 2 | run, only those tests |
-| classify | otherwise | report |
-| heal | healed tests exist | run, only healed tests |
-| any | budget exceeded | report with partial = true |
+| After             | Condition                            | Next                       |
+| ----------------- | ------------------------------------ | -------------------------- |
+| evaluate_coverage | score >= 0.75 or planIterations >= 3 | generate                   |
+| evaluate_coverage | score < 0.75                         | plan, with gaps injected   |
+| classify          | any `script` with healAttempts < 2   | heal                       |
+| classify          | any `flaky` with rerunAttempts < 2   | run, only those tests      |
+| classify          | otherwise                            | report                     |
+| heal              | healed tests exist                   | run, only healed tests     |
+| any               | budget exceeded                      | report with partial = true |
 
 Every edge function appends a `Decision` to state and emits it on the event bus.
 `generate` fans out one `generateFlow` invocation per flow using `Send()` and joins on `testFiles`.
@@ -132,13 +132,13 @@ Still-unresolved flows are dropped and recorded as a decision.
 
 Checks and weights:
 
-| Check | Weight |
-|---|---|
-| Every form has happy, negative, and empty-submit flows | 0.30 |
-| Every gated route has an unauthenticated-access flow | 0.20 |
-| Every PRD requirement maps to at least one flow | 0.20 (skipped and re-weighted when no PRD) |
-| Intent keywords appear in at least one flow title | 0.10 (skipped when no intent) |
-| negative + edge + error_state flows >= 40% of flows | 0.20 |
+| Check                                                  | Weight                                     |
+| ------------------------------------------------------ | ------------------------------------------ |
+| Every form has happy, negative, and empty-submit flows | 0.30                                       |
+| Every gated route has an unauthenticated-access flow   | 0.20                                       |
+| Every PRD requirement maps to at least one flow        | 0.20 (skipped and re-weighted when no PRD) |
+| Intent keywords appear in at least one flow title      | 0.10 (skipped when no intent)              |
+| negative + edge + error_state flows >= 40% of flows    | 0.20                                       |
 
 Score is the weighted average of per-check pass rates.
 PRD requirements are extracted once by an LLM structured-output call and cached in state.
@@ -210,12 +210,12 @@ Screenshots are throttled to one per 500 ms per run and stored under `traces/`.
 
 `api.ts` (Hono):
 
-| Route | Behaviour |
-|---|---|
-| `POST /run` | body `{url, credentials?, intent?, prd?, maxFlows?, budget?}`; starts the graph; returns `{runId}` |
-| `GET /events/:runId` | SSE; replays `events.jsonl` then streams live |
-| `GET /report/:runId` | serves `report.html` |
-| `GET /runs/:runId/files/*` | serves output files including traces |
+| Route                      | Behaviour                                                                                          |
+| -------------------------- | -------------------------------------------------------------------------------------------------- |
+| `POST /run`                | body `{url, credentials?, intent?, prd?, maxFlows?, budget?}`; starts the graph; returns `{runId}` |
+| `GET /events/:runId`       | SSE; replays `events.jsonl` then streams live                                                      |
+| `GET /report/:runId`       | serves `report.html`                                                                               |
+| `GET /runs/:runId/files/*` | serves output files including traces                                                               |
 
 ## 9. UI
 
@@ -230,11 +230,11 @@ Routes: `/login`, `/register`, `/products`, `/products/:id`, `/cart`, `/checkout
 Seeded user `demo@shop.test` / `demo1234`.
 Chaos toggles via env vars and `POST /__chaos` body `{renameCheckoutButton, breakCoupon, cosmeticChange}`:
 
-| Toggle | Effect | Expected qa-pilot behaviour |
-|---|---|---|
-| renameCheckoutButton | "Place order" becomes "Complete purchase" | classifier says script, healer patches locator |
-| breakCoupon | `POST /api/coupon` returns 500 | classifier says defect with network evidence, escalates |
-| cosmeticChange | button colour changes | no failure |
+| Toggle               | Effect                                    | Expected qa-pilot behaviour                             |
+| -------------------- | ----------------------------------------- | ------------------------------------------------------- |
+| renameCheckoutButton | "Place order" becomes "Complete purchase" | classifier says script, healer patches locator          |
+| breakCoupon          | `POST /api/coupon` returns 500            | classifier says defect with network evidence, escalates |
+| cosmeticChange       | button colour changes                     | no failure                                              |
 
 ## 11. Error handling
 

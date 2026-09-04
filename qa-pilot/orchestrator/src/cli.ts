@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { startRun, newRunId } from "./run.js";

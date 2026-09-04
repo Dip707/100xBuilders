@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 import { getBus } from "./events.js";
 import { makeLlmClient, type LlmClient } from "./llm/client.js";
 import { buildGraph } from "./graph.js";
