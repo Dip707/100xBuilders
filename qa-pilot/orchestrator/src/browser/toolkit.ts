@@ -63,6 +63,12 @@ export function navigationTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 30000;
 }
 
+/** The same budgets as constants, for callers that read them once at import time. */
+export const ELEMENT_TIMEOUT_MS = actionTimeoutMs();
+export const NAVIGATION_TIMEOUT_MS = navigationTimeoutMs();
+/** How long a screenshot may take. It is decoration, so it gets less than an element. */
+export const SCREENSHOT_TIMEOUT_MS = 3000;
+
 /** Navigations to retry: a timeout, a dropped connection, a DNS blip. Not a 404. */
 function isTransientNavError(err: unknown): boolean {
   const m = err instanceof Error ? err.message : String(err);
@@ -241,7 +247,16 @@ export class BrowserToolkit {
     if (now - this.lastShot < 500) return "";
     this.lastShot = now;
     const file = `${this.shotDir}/${now}-${label.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}.png`;
-    await page.screenshot({ path: file });
+    // A screenshot is a picture for the run screen, never part of the verdict. A page that
+    // is still animating, mid-navigation or already closed cannot be captured, and that must
+    // cost the agent a picture, not the step - a screenshot timeout once took a whole run down
+    // from inside the planner.
+    try {
+      await page.screenshot({ path: file, timeout: SCREENSHOT_TIMEOUT_MS, animations: "disabled" });
+    } catch (e) {
+      this.bus?.log(this.agent, `screenshot skipped: ${(e as Error).message.split("\n")[0]}`);
+      return "";
+    }
     this.bus?.emit({ type: "screenshot", agent: this.agent, message: label, data: { path: file } });
     return file;
   }
@@ -304,6 +319,13 @@ export class BrowserToolkit {
         if ((await exact.count().catch(() => 0)) === 1) {
           target = exact;
           targetCode = `page.getByRole(${q(exp.role)}, { name: ${q(exp.name)}, exact: true })`;
+        } else {
+          // Several elements share the name even exactly (a product's image link and title
+          // link): the expectation is about the first of them, the same way a step that names
+          // a repeated control acts on the first. Emitting the bare locator would hand the
+          // runner a strict mode violation at every execution.
+          target = loose.first();
+          targetCode = `page.getByRole(${q(exp.role)}, { name: ${q(exp.name)} }).first()`;
         }
       }
     }

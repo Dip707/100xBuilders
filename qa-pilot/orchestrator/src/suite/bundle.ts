@@ -60,7 +60,7 @@ export function renderFixtures(loginSteps: Step[], credentials: Credentials | un
     ``,
     `async function runStep(page: Page, s: Step): Promise<void> {`,
     `  if (s.action === "goto") {`,
-    `    await page.goto(s.target ?? "/");`,
+    `    await page.goto(s.target ?? "/", { waitUntil: "domcontentloaded" });`,
     `    return;`,
     `  }`,
     `  const loc = page.getByRole(s.role as never, { name: s.name });`,

@@ -125,3 +125,66 @@ describe("unique test data", () => {
     await page.close();
   });
 });
+
+describe("resolveLocator on pages with repeated controls", () => {
+  it("acts on the first of several identical controls instead of giving up", async () => {
+    // A product grid: one "Add to cart" per item. A tester told to add a product to the cart
+    // presses the first one; the resolver used to reject the step as ambiguous.
+    const page = await kit.newPage();
+    await page.setContent(Array.from({ length: 6 }, (_, i) => `<div><h2>Item ${i}</h2><button>Add to cart</button></div>`).join(""));
+    const r = await resolveLocator(page, { role: "button", name: "Add to cart" });
+    expect(r?.strategy).toBe("role");
+    expect(r?.code).toBe("page.getByRole('button', { name: 'Add to cart' }).first()");
+    await r!.locator.click();
+    await page.close();
+  });
+  it("still prefers the single exact match over the first loose one", async () => {
+    const page = await kit.newPage();
+    await page.setContent("<button>Add to cart</button><button>Add to cart now</button><button>Add to cart later</button>");
+    const r = await resolveLocator(page, { role: "button", name: "Add to cart" });
+    expect(r?.code).toBe("page.getByRole('button', { name: 'Add to cart', exact: true })");
+    await page.close();
+  });
+  it("finds an icon-only control by its data-test attribute", async () => {
+    // The crawler names an unlabelled control after its data-test attribute, so the planner
+    // refers to it by that name. Playwright's getByTestId only reads data-testid.
+    const page = await kit.newPage();
+    await page.setContent('<a href="/cart" data-test="shopping-cart-link"><span class="badge">1</span></a>');
+    const r = await resolveLocator(page, { role: "link", name: "shopping-cart-link" });
+    expect(r?.strategy).toBe("testid");
+    expect(r?.code).toBe("page.locator('[data-test=\"shopping-cart-link\"]')");
+    await page.close();
+  });
+});
+
+describe("screenshots never fail an agent", () => {
+  it("returns an empty path when the screenshot cannot be taken", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const shots = await BrowserToolkit.launch({ headless: true, baseUrl: shop.base, screenshotDir: mkdtempSync(join(tmpdir(), "qa-shots-")) });
+    try {
+      const page = await shots.newPage();
+      await page.goto(shop.base + "/login");
+      await page.close();
+      // A closed page cannot be captured. That is a lost picture, not a failed step.
+      await expect(shots.screenshot(page, "after close")).resolves.toBe("");
+    } finally {
+      await shots.close();
+    }
+  });
+});
+
+describe("checkExpectation on pages with repeated elements", () => {
+  it("verifies against the first match and emits .first() when a name is repeated", async () => {
+    // A product card links its image and its title under the same accessible name. "The
+    // product link is visible" is true of either; an assertion that trips strict mode is not
+    // what the planner meant, and it used to fail every run at the same step.
+    const page = await kit.newPage();
+    await page.setContent('<a href="#" id="img"><img alt="Sauce Labs Backpack"></a><a href="#" id="title">Sauce Labs Backpack</a>');
+    const r = await kit.checkExpectation(page, { type: "visible", role: "link", name: "Sauce Labs Backpack" }, page.url());
+    expect(r.ok).toBe(true);
+    expect(r.code).toBe("await expect(page.getByRole('link', { name: 'Sauce Labs Backpack' }).first()).toBeVisible();");
+    await page.close();
+  });
+});

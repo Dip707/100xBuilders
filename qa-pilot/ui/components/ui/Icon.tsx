@@ -69,6 +69,7 @@ const PATHS = {
   chat: "M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H9l-5 4V5.5Z",
   paperclip: "M17.5 9.5 10 17a3.5 3.5 0 0 1-5-5l7.8-7.8a2.5 2.5 0 0 1 3.6 3.6l-7.9 7.8a1.5 1.5 0 0 1-2.1-2.1l7.2-7.2",
   trash: "M4.5 7h15M9.5 7V4.5h5V7M6.5 7l.8 12.5a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4L17.5 7M10.5 11v6M13.5 11v6",
+  sliders: "M4 7h10M18 7h2M4 12h3M11 12h9M4 17h12M20 17h0M14 5v4M7 10v4M16 15v4",
 } as const;
 
 export type IconName = keyof typeof PATHS;

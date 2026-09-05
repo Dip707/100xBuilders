@@ -35,12 +35,12 @@ export function RunTable({ runs }: { runs: RunRecord[] }) {
             <Td className="whitespace-nowrap text-[13px] text-muted">{relativeTime(run.startedAt)}</Td>
             <Td className="whitespace-nowrap font-mono text-[13px] text-muted">{formatDuration(run.durationMs)}</Td>
             <Td>
-              {run.coverageScore === undefined
+              {run.coverageScore == null
                 ? <span className="text-subtle">-</span>
                 : <Meter value={run.coverageScore} label={run.coverageScore.toFixed(2)} showPercent={false} />}
             </Td>
             <Td className="whitespace-nowrap">
-              {run.testsPassed === undefined ? <span className="text-subtle">-</span> : (
+              {run.testsPassed == null ? <span className="text-subtle">-</span> : (
                 <span className="font-mono text-[13px] tabular-nums">
                   <span className="text-pass">{run.testsPassed}</span>
                   <span className="text-subtle"> / </span>

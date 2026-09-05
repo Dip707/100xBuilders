@@ -28,7 +28,28 @@ export type NewRunInput = {
   chatId?: string;
 };
 
-export type ChatMessage = { role: "user" | "assistant"; text: string; at: string };
+export type ChatKind = "intake" | "copilot";
+
+/** A rerun the copilot decided on: what will run, and what cannot and why. */
+export type RerunPlanData = { kind: "rerun_plan"; runId: string; testIds: string[]; blocked: { id: string; reason: string }[] };
+/** The outcome of an executed rerun, stored on the message so a reopened chat shows it. */
+export type RerunResultData = {
+  kind: "rerun_result";
+  runId: string;
+  results: {
+    id: string; title: string; status: string; error?: string; durationMs?: number;
+    /** The pipeline run's classification of this test, when it had one. A rerun never classifies. */
+    verdict?: { class: string; confidence: number };
+    /** The defect record the pipeline escalated for this test, when it did. */
+    defectId?: string;
+  }[];
+};
+export type ChatMessageData = RerunPlanData | RerunResultData;
+
+export type ChatMessage = { role: "user" | "assistant"; text: string; at: string; data?: ChatMessageData };
+
+/** What a copilot chat acts on: a target URL, optionally narrowed to one run. */
+export type ChatScope = { url?: string; runId?: string };
 
 /** What a chat has assembled so far. Never carries the target app's credentials. */
 export type ChatDraft = {
@@ -38,8 +59,8 @@ export type ChatDraft = {
 };
 
 export type Chat = {
-  id: string; userId: string; title: string; createdAt: string; updatedAt: string;
-  messages: ChatMessage[]; draft: ChatDraft; runId?: string;
+  id: string; userId: string; kind: ChatKind; title: string; createdAt: string; updatedAt: string;
+  messages: ChatMessage[]; draft: ChatDraft; scope?: ChatScope; pending?: { runId: string; testIds: string[] }; runId?: string;
 };
 
 /** A chat without its transcript, as the chats dropdown lists them. */
@@ -127,6 +148,86 @@ export const sendChatMessage = (id: string, text: string, snapshot: Record<strin
   apiFetch<ChatTurn>(`/chats/${encodeURIComponent(id)}/messages`, {
     method: "POST",
     body: JSON.stringify({ text, snapshot }),
+  });
+
+export type CopilotAction = "rerun" | "answer" | "clarify";
+
+export type CopilotTurn = {
+  reply: string;
+  action: CopilotAction;
+  /** The run the turn resolved to and answered about. Absent when no finished run was found. */
+  runId?: string;
+  /** Present on a rerun: what will run once `executeCopilot` is called. */
+  plan?: RerunPlanData;
+  needs: ("credentials")[];
+  title?: string;
+};
+
+export type CopilotExecution = { reply: string; result: RerunResultData };
+
+export type TrackerProvider = "linear" | "jira";
+
+/** Where a tracker connection files issues: a Linear team or a Jira project. */
+export type TrackerDestination = { id: string; label: string };
+
+/** What the API says about the user's tracker connection. Never carries a token or Composio's account id. */
+export type IntegrationPublic = {
+  provider: TrackerProvider;
+  /** `pending` between creating the OAuth link and the tracker's callback. */
+  status: "pending" | "active";
+  connectedAt: string;
+  destination?: TrackerDestination;
+  /** "Linear · Engineering (ENG)" once a destination is chosen, "Linear" before. */
+  label: string;
+};
+
+/** A connection the copilot can file into: active, with a destination chosen. */
+export const isUsableIntegration = (i: IntegrationPublic | null | undefined): i is IntegrationPublic & { destination: TrackerDestination } =>
+  !!i && i.status === "active" && i.destination !== undefined;
+
+/** An issue filed in the tracker for one test of one run. */
+export type TicketRecord = {
+  id: string; userId: string; runId: string; testId: string;
+  provider: TrackerProvider; key: string; url: string; createdAt: string;
+};
+
+export const getIntegration = () => apiFetch<{ integration: IntegrationPublic | null }>("/integrations").then((r) => r.integration);
+
+/** Starts the OAuth flow; the browser must visit the returned URL and comes back to Settings with `returnTo` carried through. */
+export const startConnect = (provider: TrackerProvider, returnTo?: string | null) =>
+  apiFetch<{ redirectUrl: string }>("/integrations/connect", { method: "POST", body: JSON.stringify({ provider, ...(returnTo ? { return: returnTo } : {}) }) }).then((r) => r.redirectUrl);
+
+export const listDestinations = () => apiFetch<{ destinations: TrackerDestination[] }>("/integrations/destinations").then((r) => r.destinations);
+
+export const setDestination = (id: string) =>
+  apiFetch<{ integration: IntegrationPublic }>("/integrations/destination", { method: "PUT", body: JSON.stringify({ id }) }).then((r) => r.integration);
+
+export const disconnectIntegration = () => apiFetch<void>("/integrations", { method: "DELETE" });
+
+export const listTickets = (runId: string) =>
+  apiFetch<{ tickets: TicketRecord[] }>(`/runs/${encodeURIComponent(runId)}/tickets`).then((r) => r.tickets);
+
+/** Files the test's defect in the connected tracker; resolves with the existing ticket when one was already filed. */
+export const raiseTicket = (runId: string, testId: string) =>
+  apiFetch<{ ticket: TicketRecord }>(`/runs/${encodeURIComponent(runId)}/tests/${encodeURIComponent(testId)}/ticket`, { method: "POST" }).then((r) => r.ticket);
+
+export const createCopilotChat = (scope: ChatScope) =>
+  apiFetch<{ chat: Chat }>("/copilot/chats", { method: "POST", body: JSON.stringify(scope) }).then((r) => r.chat);
+
+export const listCopilotChats = () => apiFetch<{ chats: ChatSummary[] }>("/copilot/chats").then((r) => r.chats);
+
+/** One copilot turn: the decision, not the execution. */
+export const sendCopilotMessage = (id: string, text: string) =>
+  apiFetch<CopilotTurn>(`/copilot/chats/${encodeURIComponent(id)}/messages`, { method: "POST", body: JSON.stringify({ text }) });
+
+/**
+ * Executes the chat's pending rerun. The credentials travel only in this request and are
+ * dropped by the server when it returns; they are never part of a message.
+ */
+export const executeCopilot = (id: string, credentials?: { username: string; password: string }) =>
+  apiFetch<CopilotExecution>(`/copilot/chats/${encodeURIComponent(id)}/execute`, {
+    method: "POST",
+    body: JSON.stringify(credentials ? { credentials } : {}),
   });
 
 /** Fetches a run artifact as text; null when it is not there (yet). */

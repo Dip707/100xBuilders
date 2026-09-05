@@ -63,6 +63,11 @@ export function createApp() {
     s.cart[id] = (s.cart[id] ?? 0) + n;
     res.redirect(`/products/${id}?added=1`);
   });
+  // The product page renders the "Add to cart" form for guests too, so requireLogin's
+  // redirect (`/login?next=/cart/add`) sends them here as a GET once they sign in - there was
+  // no GET handler, so that landed on a 404 instead of anywhere useful. Guests still have to
+  // press "Add to cart" again after logging in; this just keeps the redirect chain alive.
+  app.get("/cart/add", (req, res) => res.redirect("/products"));
   app.get("/cart", (req, res) => {
     const s = getSession(req);
     res.send(v.layout("Cart", v.cartView(s, products, s ? cartTotal(s) : 0), userOf(req)));

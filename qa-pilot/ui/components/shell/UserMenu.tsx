@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useUser } from "@/lib/auth";
 import { Icon, ThemeToggle } from "@/components/ui";
 
@@ -24,6 +25,9 @@ export function UserMenu() {
       <div ref={ref} className="relative min-w-0 flex-1">
         {open && (
           <div className="absolute bottom-full left-0 mb-1.5 w-full overflow-hidden rounded-input border border-line bg-raised">
+            <Link href="/settings" onClick={() => setOpen(false)} className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[13px] text-body transition-colors hover:bg-selected hover:text-fg">
+              <Icon name="sliders" size={14} /> Settings
+            </Link>
             <button onClick={signOut} className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[13px] text-body transition-colors hover:bg-selected hover:text-fg">
               <Icon name="logOut" size={14} /> Log out
             </button>

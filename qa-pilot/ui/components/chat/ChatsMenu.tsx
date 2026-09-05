@@ -10,9 +10,11 @@ import type { ChatSummary } from "@/lib/api";
  * it produced.
  */
 export function ChatsMenu({
-  chats, currentId, open, onOpen, onSelect, onNew, onDelete,
+  chats, currentId, open, onOpen, onSelect, onNew, onDelete, align = "left",
 }: {
   chats: ChatSummary[];
+  /** Which edge of the button the list hangs from. Right, for a menu sitting at the end of a header. */
+  align?: "left" | "right";
   currentId: string | null;
   open: boolean;
   onOpen: (open: boolean) => void;
@@ -48,7 +50,7 @@ export function ChatsMenu({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-8 z-30 w-[268px] overflow-hidden rounded-box border border-line bg-raised">
+        <div className={`absolute top-8 z-30 w-[268px] overflow-hidden rounded-box border border-line bg-raised ${align === "right" ? "right-0" : "left-0"}`}>
           <button
             type="button"
             onClick={() => { onNew(); onOpen(false); }}

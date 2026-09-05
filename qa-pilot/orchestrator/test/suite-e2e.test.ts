@@ -67,7 +67,7 @@ describe("the downloaded suite", () => {
     const specs = mkdtempSync(join(tmpdir(), "qa-specs-")) + "/";
     // A signed-in flow: it only passes if the bundled login actually signed in.
     writeFileSync(`${specs}orders-001.spec.ts`, generatedSpec("orders-001", "  await page.goto('/orders');\n  await expect(page).toHaveURL(/\\/orders/);\n  await expect(page.getByRole('link', { name: 'Log out' })).toBeVisible();\n"));
-    writeFileSync(`${specs}home-001.spec.ts`, generatedSpec("home-001", "  await page.goto('/');\n  await expect(page.getByRole('heading', { name: 'Welcome to Mini Shop' })).toBeVisible();\n"));
+    writeFileSync(`${specs}home-001.spec.ts`, generatedSpec("home-001", "  await page.goto('/');\n  await expect(page.getByRole('heading', { name: 'Everyday things, thoughtfully made.' })).toBeVisible();\n"));
     const dir = materialise(buildSuite(state(specs)));
 
     const run = await runSuite(dir, { QA_USERNAME: credentials.username, QA_PASSWORD: credentials.password, BASE_URL: shop.base });

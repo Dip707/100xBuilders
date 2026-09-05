@@ -110,6 +110,21 @@ The **Review** card on the start form pauses the run after the coverage gate.
 The proposed tests appear in a review sheet where each can be renamed, re-prioritised or deselected; nothing is generated until *Run all* is confirmed.
 It is off by default so a run stays fully autonomous.
 
+## The copilot
+
+**Copilot** (`/copilot`) is a chat that acts on finished runs.
+Type "rerun the tests that failed last time, especially the checkout ones" and it resolves the run you mean, checks that those tests exist, reruns them and reports the outcome in the chat, with each test's status moving live while it runs.
+Ask "why did the coupon test fail?" and it answers from the run's results, the classifier's verdict and the defect ticket.
+Every chat is saved under a title taken from the first request, so the dropdown reads like a list of things you asked for.
+A run's login is never stored, so after the API restarts a rerun of signed-in tests asks for the target app's account in masked inputs; the values travel only with that request.
+*Ask copilot* on a run header opens a chat scoped to that run.
+
+When a rerun still fails and the pipeline's classifier called that failure an app defect, the row offers to file it.
+Connect Linear or Jira once under Settings (the user menu): the tab goes to the tracker's own sign-in through Composio and comes back, you pick the team or project when there is more than one, and the row reads *Raise in Linear* or *Raise in Jira*.
+The ticket carries the repro steps, expected and actual, the classifier's evidence, the rerun error and a link back to the case, and the row turns into the issue's link.
+qa-pilot never holds a tracker password or API key; Composio keeps the OAuth token and qa-pilot stores only the connected account's id.
+A failure the classifier called an environment error, a script bug or flaky is named as such and never invited to a ticket.
+
 ## Demo script (5 minutes)
 
 1. Start the three services and open the UI.
@@ -143,6 +158,10 @@ A screenshot of the live UI during a fake-LLM run that stops at planning, showin
 | `QA_PILOT_SCREENCAST` | `1` | `0` turns off the live viewport stream on the run screen |
 | `QA_PILOT_API_PORT` | `4000` | API port |
 | `QA_PILOT_OUTPUT` | `qa-pilot/output/` | where run artifacts go |
+| `COMPOSIO_API_KEY` | required to connect a tracker | Composio project key; Linear and Jira connect through Composio's OAuth |
+| `COMPOSIO_LINEAR_AUTH_CONFIG_ID`, `COMPOSIO_JIRA_AUTH_CONFIG_ID` | created on first use | reuse existing Composio auth configs instead of letting qa-pilot create managed ones |
+| `QA_PILOT_API_ORIGIN` | `http://localhost:4000` | where the browser reaches the API, for the OAuth callback |
+| `QA_PILOT_UI_ORIGIN` | `http://localhost:3000` | the UI's origin, allowed by CORS, returned to after OAuth, and used for the case link a filed ticket carries |
 | `QA_PILOT_FAKE_LLM` | unset | `1` swaps in the fake LLM client; used by tests and for a UI walkthrough with no key |
 
 ### Persistence

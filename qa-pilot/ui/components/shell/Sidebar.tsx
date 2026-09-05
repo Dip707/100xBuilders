@@ -106,7 +106,10 @@ export function Sidebar() {
               </Link>
               <p className="truncate px-2.5 pt-1 font-mono text-[11px] text-subtle" title={runId}>{runId}</p>
             </div>
-            <Section title="Setup" pathname={pathname} items={[{ href: "/runs/new", label: "New run", icon: "plus", exact: true }]} />
+            <Section title="Setup" pathname={pathname} items={[
+              { href: "/runs/new", label: "New run", icon: "plus", exact: true },
+              { href: "/copilot", label: "Copilot", icon: "sparkles", exact: true },
+            ]} />
             {/*
               The workspace in pipeline order, each stage badged with where the run has
               actually got to. Every one stays clickable: a stage that has not started
@@ -124,6 +127,7 @@ export function Sidebar() {
           <Section title="Workspace" pathname={pathname} items={[
             { href: "/", label: "Overview", icon: "home", exact: true },
             { href: "/runs/new", label: "New run", icon: "plus", exact: true },
+            { href: "/copilot", label: "Copilot", icon: "sparkles", exact: true },
           ]} />
         )}
 

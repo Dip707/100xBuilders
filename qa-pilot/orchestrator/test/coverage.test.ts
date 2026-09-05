@@ -187,6 +187,139 @@ describe("afterCoverage", () => {
   });
 });
 
+describe("scoreCoverage across discovered routes", () => {
+  // A login-walled app: the login form is the only form, so a form-only score calls a plan that
+  // never leaves the login page complete - even though the catalog and cart went untested.
+  const walled: SiteMap = {
+    origin: "http://x", loginPath: "/", loginSteps: [],
+    pages: {
+      "/": { url: "http://x/", path: "/", title: "Login", gated: false, snapshot: "", buttons: [{ role: "button", name: "Login" }], links: [],
+        forms: [{ id: "/#0", submit: { role: "button", name: "Login" }, fields: [{ role: "textbox", name: "User", type: "text", required: true }, { role: "textbox", name: "Password", type: "password", required: true }] }] },
+      "/catalog": { url: "http://x/catalog", path: "/catalog", title: "Catalog", gated: true, snapshot: "", buttons: [{ role: "button", name: "Add to cart" }], links: [], forms: [] },
+      "/basket": { url: "http://x/basket", path: "/basket", title: "Basket", gated: true, snapshot: "", buttons: [{ role: "button", name: "Checkout" }], links: [], forms: [] },
+    },
+  };
+  const authOnly = [
+    mk("auth-001", "happy", "User logs in", "/"),
+    mk("auth-002", "negative", "Wrong password is rejected", "/"),
+    mk("auth-003", "negative", "Empty submit shows validation", "/"),
+    mk("auth-004", "edge", "A very long username is rejected", "/"),
+    mk("authz-001", "authz", "Catalog is blocked logged out", "/catalog"),
+    mk("authz-002", "authz", "Basket is blocked logged out", "/basket"),
+  ];
+
+  it("does not call a plan complete when every flow only visits the login page", () => {
+    const v = scoreCoverage(walled, authOnly, {});
+    expect(v.gaps.map((g) => g.kind)).toContain("missing_route_flow");
+    expect(v.score).toBeLessThan(COVERAGE_THRESHOLD);
+  });
+
+  it("names the untouched routes so the next plan iteration can close them", () => {
+    const targets = scoreCoverage(walled, authOnly, {}).gaps.filter((g) => g.kind === "missing_route_flow").map((g) => g.target);
+    expect(targets).toEqual(expect.arrayContaining(["/catalog", "/basket"]));
+  });
+
+  it("clears once flows exercise the routes behind the wall", () => {
+    const v = scoreCoverage(walled, [...authOnly, mk("cart-001", "happy", "Add an item to the cart", "/catalog"), mk("checkout-001", "happy", "Check out from the basket", "/basket")], {});
+    expect(v.gaps.filter((g) => g.kind === "missing_route_flow")).toHaveLength(0);
+    expect(v.score).toBeGreaterThanOrEqual(COVERAGE_THRESHOLD);
+  });
+
+  it("ignores a route with nothing to interact with", () => {
+    const map: SiteMap = { ...walled, pages: { ...walled.pages, "/legal": { url: "http://x/legal", path: "/legal", title: "Legal", gated: false, snapshot: "", buttons: [], links: [], forms: [] } } };
+    expect(scoreCoverage(map, authOnly, {}).gaps.filter((g) => g.target === "/legal")).toHaveLength(0);
+  });
+});
+
+describe("the coverage gate reads the score it computed", () => {
+  it("stores the score unrounded, so display rounding cannot push a plan over the gate", () => {
+    // A plan scoring 0.748 is below the gate. Storing it rounded to 0.75 handed a
+    // half-covered plan straight to the generator; the UI rounds for display instead.
+    const siteMapWith = (paths: string[]): SiteMap => ({
+      origin: "http://x", loginPath: "/", loginSteps: [],
+      pages: Object.fromEntries(paths.map((p) => [p, { url: `http://x${p}`, path: p, title: p, gated: p !== "/", snapshot: "", links: [], buttons: [{ role: "button", name: "Go" }],
+        forms: p === "/" ? [{ id: `${p}#0`, submit: { role: "button", name: "Login" }, fields: [{ role: "textbox", name: "User", type: "text", required: true }] }] : [] }])),
+    });
+    const map = siteMapWith(["/", "/a", "/b", "/c", "/d"]);
+    const flows = [
+      mk("auth-001", "happy", "Log in", "/"), mk("auth-002", "negative", "Wrong password", "/"),
+      mk("a-001", "authz", "a is blocked", "/a"), mk("b-001", "authz", "b is blocked", "/b"),
+      mk("c-001", "authz", "c is blocked", "/c"), mk("d-001", "authz", "d is blocked", "/d"),
+      mk("a-002", "happy", "Use a", "/a"), mk("b-002", "edge", "Use b oddly", "/b"),
+    ];
+    const v = scoreCoverage(map, flows, {});
+    expect(v.score).not.toBe(Math.round(v.score * 100) / 100);
+    // And the gate reads that same number, so a score a hair under it re-plans.
+    const near = { ...initialState({ runId: "r", url: "http://x" }), coverage: { ...v, score: COVERAGE_THRESHOLD - 0.002 }, planIterations: 1 };
+    expect(afterCoverage(near, { bus: new EventBus("r", mkdtempSync(join(tmpdir(), "qa-cov-")) + "/"), llm: new FakeLlmClient({}) })).toBe("plan");
+  });
+
+  it("counts a route as untested risk when only an authz flow visits it", () => {
+    const map: SiteMap = {
+      origin: "http://x", loginPath: "/", loginSteps: [],
+      pages: { "/cart": { url: "http://x/cart", path: "/cart", title: "Cart", gated: true, snapshot: "", links: [], forms: [], buttons: [{ role: "button", name: "Checkout" }] } },
+    };
+    const v = scoreCoverage(map, [mk("auth-005", "authz", "Cart is blocked when logged out", "/cart")], {});
+    expect(v.untested_risk.map((u) => u.flow)).toEqual(["/cart"]);
+  });
+});
+
+describe("scoreCoverage credits the routes a flow really reaches", () => {
+  // A checkout flow goes inventory -> cart -> checkout by clicking, the way a user does. Only its
+  // first step is a goto, so the scorer used to see a flow that never left the inventory page.
+  const shop: SiteMap = {
+    origin: "http://x", loginPath: "/", loginSteps: [],
+    pages: {
+      "/": { url: "http://x/", path: "/", title: "Login", gated: false, snapshot: "", buttons: [{ role: "button", name: "Login" }], links: [],
+        forms: [{ id: "/#0", submit: { role: "button", name: "Login" }, fields: [{ role: "textbox", name: "User", type: "text", required: true }, { role: "textbox", name: "Password", type: "password", required: true }] }] },
+      "/inventory": { url: "http://x/inventory", path: "/inventory", title: "Products", gated: true, snapshot: "", buttons: [{ role: "button", name: "Add to cart" }], links: [], forms: [] },
+      "/cart": { url: "http://x/cart", path: "/cart", title: "Cart", gated: true, snapshot: "", buttons: [{ role: "button", name: "Checkout" }], links: [], forms: [] },
+      "/checkout": { url: "http://x/checkout", path: "/checkout", title: "Checkout", gated: true, snapshot: "", buttons: [{ role: "button", name: "Continue" }], links: [],
+        forms: [{ id: "/checkout#0", submit: { role: "button", name: "Continue" }, fields: [{ role: "textbox", name: "First Name", type: "text", required: true }] }] },
+    },
+  };
+  const clickThrough = (id: string, category: Flow["category"], title: string): Flow => ({
+    ...mk(id, category, title, "/inventory"),
+    preconditions: ["logged_in"],
+    steps: [{ action: "goto", target: "/inventory" }, { action: "click", role: "button", name: "Add to cart" }, { action: "click", role: "link", name: "cart" }, { action: "click", role: "button", name: "Checkout" }, { action: "click", role: "button", name: "Continue" }],
+    visits: ["/inventory", "/cart", "/checkout"],
+  });
+  const flows = [
+    mk("auth-001", "happy", "User logs in", "/"),
+    mk("auth-002", "negative", "Wrong password is rejected", "/"),
+    mk("auth-003", "negative", "Empty submit shows validation", "/"),
+    clickThrough("checkout-001", "happy", "Fill in the checkout form and continue"),
+    clickThrough("checkout-002", "negative", "Checkout rejects a postal code made of letters"),
+    clickThrough("checkout-003", "edge", "Empty checkout form shows the first name error"),
+    mk("cart-001", "authz", "Cart is blocked logged out", "/cart"),
+    mk("checkout-004", "authz", "Checkout is blocked logged out", "/checkout"),
+    mk("catalog-001", "authz", "Products are blocked logged out", "/inventory"),
+  ];
+
+  it("counts a form as covered when the flow clicked its way there", () => {
+    const v = scoreCoverage(shop, flows, {});
+    expect(v.gaps.filter((g) => g.target === "form:/checkout")).toHaveLength(0);
+    expect(v.gaps.filter((g) => g.kind === "missing_route_flow")).toHaveLength(0);
+    expect(v.untested_risk).toHaveLength(0);
+    expect(v.score).toBeGreaterThanOrEqual(COVERAGE_THRESHOLD);
+  });
+
+  it("reads a flow that leaves one field out as the form's negative case, not its empty case", () => {
+    const oneFieldOut = flows.map((f) => (f.id === "checkout-002" ? { ...f, title: "Reject checkout when the postal code is missing from the form" } : f));
+    const v = scoreCoverage(shop, oneFieldOut, {});
+    expect(v.gaps.filter((g) => g.kind === "missing_negative" && g.target === "form:/checkout")).toHaveLength(0);
+    expect(v.gaps.filter((g) => g.kind === "missing_empty_submit" && g.target === "form:/checkout")).toHaveLength(0);
+  });
+
+  it("does not treat the filler words of an intent as areas to cover", () => {
+    const v = scoreCoverage(shop, flows, { intent: "cover the product catalog, the cart and checkout end to end, not just login" });
+    const words = v.gaps.filter((g) => g.kind === "intent_uncovered").map((g) => g.target);
+    expect(words).not.toContain("cover");
+    expect(words).not.toContain("just");
+    expect(words).not.toContain("end");
+  });
+});
+
 describe("replanStalled", () => {
   it("never fires on the first iteration, which has nothing to compare against", () => {
     expect(replanStalled([])).toBe(false);

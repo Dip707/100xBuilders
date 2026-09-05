@@ -30,14 +30,21 @@ export const PageInfoSchema = z.object({
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 
 // ---------- Flow ----------
-export const StepSchema = z.object({
-  action: z.enum(["goto", "fill", "click", "select", "press", "check"]),
-  target: z.string().optional(),   // goto: path
-  role: z.string().optional(),
-  name: z.string().optional(),
-  value: z.string().optional(),    // fill/select/press value
-  intent: z.string().optional(),   // human description, used by healer
-});
+export const StepSchema = z
+  .object({
+    action: z.enum(["goto", "fill", "click", "select", "press", "check"]),
+    target: z.string().optional(),   // goto: path
+    role: z.string().optional(),
+    name: z.string().optional(),
+    value: z.string().optional(),    // fill/select/press value
+    intent: z.string().optional(),   // human description, used by healer
+  })
+  // A step that acts on the page has to say on what. The repair prompt used to hand back a
+  // click with neither, which the dry walk could only log as `unresolved: ""` and drop.
+  .refine((s) => s.action === "goto" || Boolean(s.role || s.name), {
+    message: "a fill, click, select, press or check step needs the element's role or accessible name",
+    path: ["name"],
+  });
 export type Step = z.infer<typeof StepSchema>;
 
 export const SiteMapSchema = z.object({
@@ -80,12 +87,18 @@ export const FlowSchema = z.object({
   steps: z.array(StepSchema).min(1),
   expected: z.array(ExpectationSchema).min(1),
   source: z.enum(["explored", "prd", "intent"]),
+  /** The routes the planner's dry walk saw this flow on, in order, after its own steps. This is
+   *  evidence, not a claim: a flow that reaches checkout by clicking through the cart never
+   *  names that route in a goto, and the coverage scorer would not credit it without this. */
+  visits: z.array(z.string()).optional(),
 });
 export type Flow = z.infer<typeof FlowSchema>;
+/** What the model is asked to produce: a flow without the field only the dry walk can fill in. */
+export const FlowInputSchema = FlowSchema.omit({ visits: true });
 
 // ---------- Coverage ----------
 export const CoverageGapSchema = z.object({
-  kind: z.enum(["missing_happy", "missing_negative", "missing_empty_submit", "missing_authz", "prd_uncovered", "intent_uncovered", "category_mix", "missing_error_state"]),
+  kind: z.enum(["missing_happy", "missing_negative", "missing_empty_submit", "missing_authz", "missing_route_flow", "prd_uncovered", "intent_uncovered", "category_mix", "missing_error_state"]),
   target: z.string().optional(),
   requirement: z.string().optional(),
   suggest: z.string(),
@@ -221,7 +234,14 @@ export const RunStateAnnotation = Annotation.Root({
   decisions: Annotation<Decision[]>(append<Decision>()),
   llmCalls: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
   partial: Annotation<boolean>({ reducer: (_a, b) => b, default: () => false }),
-  partialReason: Annotation<string | undefined>(),
+  // Generation fans out one node per flow, so several branches can fail in the same step and
+  // each records why. Without a reducer LangGraph rejects the second write and aborts the whole
+  // run - taking the report, and every test that did pass, with it. Distinct reasons are kept
+  // in the order they arrived; a reason two branches share is recorded once.
+  partialReason: Annotation<string | undefined>({
+    reducer: (a, b) => (!b ? a : !a ? b : a.split("; ").includes(b) ? a : `${a}; ${b}`),
+    default: () => undefined,
+  }),
 });
 export type RunState = typeof RunStateAnnotation.State;
 export type RunUpdate = typeof RunStateAnnotation.Update;

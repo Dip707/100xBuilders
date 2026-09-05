@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { memoryStore } from "../src/store/memory.js";
-import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, type Store, type RunRecord, type ChatRecord } from "../src/store/types.js";
+import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, TicketTakenError, type Store, type RunRecord, type ChatRecord, type ChatMessage } from "../src/store/types.js";
 
 function runRec(over: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -11,7 +11,7 @@ function runRec(over: Partial<RunRecord> = {}): RunRecord {
 
 function chatRec(over: Partial<ChatRecord> = {}): ChatRecord {
   const now = new Date().toISOString();
-  return { id: "chat-1", userId: "u1", title: "New chat", createdAt: now, updatedAt: now, messages: [], draft: {}, ...over };
+  return { id: "chat-1", userId: "u1", kind: "intake", title: "New chat", createdAt: now, updatedAt: now, messages: [], draft: {}, ...over };
 }
 
 // The Mongo pass runs only when a URL is configured. It forces a database name ending in
@@ -72,6 +72,30 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     expect(await store.getRun("missing")).toBeNull();
   });
 
+  // A run that stops before the coverage gate summarises with `coverageScore: undefined`, and
+  // Mongo's driver writes an undefined `$set` value as BSON null unless told otherwise. A null
+  // reaching the UI crashed the run table on `coverageScore.toFixed`, because the guard there
+  // tests for undefined. Optional fields a run never set must read back absent from every store.
+  it("reads optional fields a run never set as undefined, not null", async () => {
+    await store.insertRun(runRec({ intent: undefined }));
+    await store.updateRun("run-1", { status: "partial", coverageScore: undefined, partialReason: undefined, testsPassed: 0 });
+
+    const got = (await store.getRun("run-1"))!;
+    expect(got.intent).toBeUndefined();
+    expect(got.coverageScore).toBeUndefined();
+    expect(got.partialReason).toBeUndefined();
+    expect(got.testsPassed).toBe(0);
+    expect((await store.listRuns("u1"))[0].coverageScore).toBeUndefined();
+  });
+
+  // A patch of nothing but undefined must stay a no-op rather than reaching the driver as an
+  // empty $set, which Mongo rejects.
+  it("ignores a patch whose every field is undefined", async () => {
+    await store.insertRun(runRec({ testsPassed: 2 }));
+    await store.updateRun("run-1", { coverageScore: undefined });
+    expect((await store.getRun("run-1"))!.testsPassed).toBe(2);
+  });
+
   it("lists a user's runs newest first and never another user's", async () => {
     await store.insertRun(runRec({ id: "run-old", startedAt: "2026-01-01T00:00:00.000Z" }));
     await store.insertRun(runRec({ id: "run-new", startedAt: "2026-02-01T00:00:00.000Z" }));
@@ -130,9 +154,14 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
   it("keeps only the newest CHAT_MESSAGE_CAP messages", async () => {
     await store.insertChat(chatRec({ id: "chat-cap" }));
     const at = new Date().toISOString();
-    for (let i = 0; i < CHAT_MESSAGE_CAP + 5; i++) {
-      await store.appendChatTurn("chat-cap", [{ role: "user", text: `m${i}`, at }], {});
-    }
+    const msgs = (from: number, to: number): ChatMessage[] =>
+      Array.from({ length: to - from }, (_, i) => ({ role: "user", text: `m${from + i}`, at }));
+    // Two turns rather than one message per turn: the cap still has to survive both a single
+    // oversized push and a later append onto an already-full transcript, and CHAT_MESSAGE_CAP
+    // sequential round-trips to a remote cluster times this out on latency alone.
+    await store.appendChatTurn("chat-cap", msgs(0, CHAT_MESSAGE_CAP), {});
+    await store.appendChatTurn("chat-cap", msgs(CHAT_MESSAGE_CAP, CHAT_MESSAGE_CAP + 5), {});
+
     const got = (await store.getChat("chat-cap"))!;
     expect(got.messages).toHaveLength(CHAT_MESSAGE_CAP);
     expect(got.messages[0].text).toBe("m5");
@@ -161,6 +190,64 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     await store.insertChat(chatRec({ id: "chat-del" }));
     await store.deleteChat("chat-del");
     expect(await store.getChat("chat-del")).toBeNull();
+  });
+
+  it("listChats filters by kind and reads a legacy chat without kind as intake", async () => {
+    await store.insertChat(chatRec({ id: "intake-1" }));
+    await store.insertChat(chatRec({ id: "copilot-1", kind: "copilot", scope: { url: "http://localhost:3005" } }));
+    // Simulates a document written before `kind` existed.
+    await store.insertChat({ ...chatRec({ id: "legacy-1" }), kind: undefined as unknown as "intake" });
+
+    const intake = (await store.listChats("u1", { kind: "intake" })).map((c) => c.id).sort();
+    expect(intake).toEqual(["intake-1", "legacy-1"]);
+    const copilot = await store.listChats("u1", { kind: "copilot" });
+    expect(copilot.map((c) => c.id)).toEqual(["copilot-1"]);
+    expect(copilot[0].url).toBe("http://localhost:3005");
+    expect(copilot[0]).not.toHaveProperty("pending");
+    expect((await store.listChats("u1")).length).toBe(3);
+    expect((await store.getChat("legacy-1"))!.kind).toBe("intake");
+  });
+
+  it("appendChatTurn stores message data, scope and pending, and null clears pending", async () => {
+    await store.insertChat(chatRec({ id: "cp", kind: "copilot", scope: {} }));
+    const at = new Date().toISOString();
+    const plan = { kind: "rerun_plan" as const, runId: "run-1", testIds: ["checkout-001"], blocked: [] };
+    await store.appendChatTurn("cp", [{ role: "assistant", text: "Rerunning 1 test", at, data: plan }], {
+      scope: { url: "http://localhost:3005", runId: "run-1" },
+      pending: { runId: "run-1", testIds: ["checkout-001"] },
+    });
+    let chat = (await store.getChat("cp"))!;
+    expect(chat.messages[0].data).toEqual(plan);
+    expect(chat.scope).toEqual({ url: "http://localhost:3005", runId: "run-1" });
+    expect(chat.pending).toEqual({ runId: "run-1", testIds: ["checkout-001"] });
+
+    await store.appendChatTurn("cp", [], { pending: null });
+    chat = (await store.getChat("cp"))!;
+    expect(chat.pending).toBeUndefined();
+    expect(chat.scope).toEqual({ url: "http://localhost:3005", runId: "run-1" });
+  });
+
+  it("saves one integration per user, replaces it, never leaks it to another user, and deletes it", async () => {
+    await store.saveIntegration({ userId: "u1", provider: "linear", connectedAccountId: "ca_1", status: "pending", connectedAt: "2026-09-05T10:00:00.000Z" });
+    const pending = (await store.getIntegration("u1"))!;
+    expect(pending).toMatchObject({ provider: "linear", connectedAccountId: "ca_1", status: "pending" });
+    expect(pending.destination).toBeUndefined();
+    expect(await store.getIntegration("u2")).toBeNull();
+    await store.saveIntegration({ userId: "u1", provider: "jira", connectedAccountId: "ca_2", status: "active", destination: { id: "ACME", label: "Acme Shop (ACME)" }, connectedAt: "2026-09-05T11:00:00.000Z" });
+    expect(await store.getIntegration("u1")).toMatchObject({ provider: "jira", connectedAccountId: "ca_2", status: "active", destination: { id: "ACME", label: "Acme Shop (ACME)" } });
+    await store.deleteIntegration("u1");
+    expect(await store.getIntegration("u1")).toBeNull();
+  });
+
+  it("stores one ticket per run and test, lists a run's tickets, and rejects a duplicate", async () => {
+    const t = { id: "t1", userId: "u1", runId: "run-1", testId: "checkout-001", provider: "linear" as const, key: "ENG-1", url: "https://linear.app/x/ENG-1", createdAt: "2026-09-05T10:00:00.000Z" };
+    await store.insertTicket(t);
+    expect(await store.findTicket("u1", "run-1", "checkout-001")).toEqual(t);
+    expect(await store.findTicket("u2", "run-1", "checkout-001")).toBeNull();
+    await store.insertTicket({ ...t, id: "t2", testId: "checkout-002", key: "ENG-2", createdAt: "2026-09-05T10:01:00.000Z" });
+    expect((await store.listTickets("u1", "run-1")).map((x) => x.key)).toEqual(["ENG-1", "ENG-2"]);
+    expect(await store.listTickets("u1", "run-2")).toEqual([]);
+    await expect(store.insertTicket({ ...t, id: "t3" })).rejects.toBeInstanceOf(TicketTakenError);
   });
 });
 

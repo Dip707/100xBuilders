@@ -284,15 +284,25 @@ export async function healNode(state: RunState, deps: NodeDeps): Promise<RunUpda
     await kit.close();
   }
   writeOutput(state.runId, "heal-log.json", [...state.healLog, ...healLog]);
-  deps.bus.emit({ type: "node_end", node: "heal", data: { healed: testsToRun.length, escalated: defects.length } });
-  return { healAttempts, healLog, testsToRun, defects, classifications, llmCalls };
+  // Tests the classifier sent for a rerun ride along with the healed ones. The graph visits
+  // the healer before the rerun path, and a heal that did not take is no reason to drop a
+  // navigation timeout that only needed a second try; without this those tests were reported
+  // as failures they never got to shake off.
+  const rerunAttempts: Record<string, number> = {};
+  for (const c of state.classifications) {
+    if (c.action !== "rerun" || testsToRun.includes(c.test)) continue;
+    testsToRun.push(c.test);
+    rerunAttempts[c.test] = (state.rerunAttempts[c.test] ?? 0) + 1;
+  }
+  deps.bus.emit({ type: "node_end", node: "heal", data: { healed: testsToRun.length - Object.keys(rerunAttempts).length, escalated: defects.length, reruns: Object.keys(rerunAttempts).length } });
+  return { healAttempts, healLog, testsToRun, rerunAttempts, defects, classifications, llmCalls };
 }
 
 export function afterHeal(state: RunState, deps: NodeDeps): "run" | "report" {
   if (state.testsToRun && state.testsToRun.length) {
-    deps.bus.decision({ node: "heal", reason: `${state.testsToRun.length} healed test(s) to rerun`, evidence: state.testsToRun, next: "run", at: now() });
+    deps.bus.decision({ node: "heal", reason: `${state.testsToRun.length} test(s) to run again: healed, or sent back by the classifier for a second try`, evidence: state.testsToRun, next: "run", at: now() });
     return "run";
   }
-  deps.bus.decision({ node: "heal", reason: "no healed tests", evidence: [], next: "report", at: now() });
+  deps.bus.decision({ node: "heal", reason: "no healed tests and nothing to rerun", evidence: [], next: "report", at: now() });
   return "report";
 }
