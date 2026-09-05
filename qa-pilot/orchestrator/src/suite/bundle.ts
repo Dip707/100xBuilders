@@ -123,15 +123,18 @@ export default defineConfig({
   fullyParallel: true,
   workers: Number(process.env.WORKERS ?? 4),
   retries: Number(process.env.RETRIES ?? 0),
-  timeout: 30_000,
-  expect: { timeout: 5_000 },
+  // A navigation against a real site can take tens of seconds, and a flow makes several,
+  // so the per-test cap leaves room for more than one of them.
+  timeout: Number(process.env.TEST_TIMEOUT_MS ?? 60_000),
+  expect: { timeout: Number(process.env.EXPECT_TIMEOUT_MS ?? 5_000) },
   reporter: [["html", { open: "never" }], ["line"]],
   use: {
     baseURL: process.env.BASE_URL ?? ${str(baseUrl)},
     // A bounded action timeout turns a missing element into a locator error naming the step,
     // instead of letting the whole test run out its timeout with nothing to show for it.
-    actionTimeout: 10_000,
-    navigationTimeout: 15_000,
+    // Navigation is given a much larger budget on purpose: a slow site is not a broken one.
+    actionTimeout: Number(process.env.ACTION_TIMEOUT_MS ?? 10_000),
+    navigationTimeout: Number(process.env.NAV_TIMEOUT_MS ?? 30_000),
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",

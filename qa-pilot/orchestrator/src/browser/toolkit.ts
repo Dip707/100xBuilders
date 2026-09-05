@@ -37,6 +37,75 @@ export function expectationCode(exp: Expectation, target: string = expectationTa
   }
 }
 
+/**
+ * How long an *action* may take: resolving a locator, clicking, filling.
+ *
+ * Deliberately short, and deliberately not shared with navigation. The classifier depends
+ * on a click against a missing element failing fast with a locator error that names the
+ * step; raise this and Playwright waits out the whole test instead, reporting `timedOut`
+ * with no error location, which leaves the classifier and the healer nothing to work with.
+ */
+export function actionTimeoutMs(): number {
+  const raw = Number(process.env.QA_PILOT_ACTION_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+}
+
+/**
+ * How long a *navigation* may take.
+ *
+ * Much larger, because it answers a different question. Five seconds is generous against a
+ * target on localhost and too tight for a real site over the internet - saucedemo.com
+ * answers in 4.2-5.6s, straddling the old shared budget, so exploring it died on the very
+ * first `page.goto` before the crawl had begun. A slow site is not a broken one.
+ */
+export function navigationTimeoutMs(): number {
+  const raw = Number(process.env.QA_PILOT_NAV_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30000;
+}
+
+/** Navigations to retry: a timeout, a dropped connection, a DNS blip. Not a 404. */
+function isTransientNavError(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : String(err);
+  return /Timeout \d+ms exceeded|net::ERR_(CONNECTION|NETWORK|NAME_NOT_RESOLVED|TIMED_OUT|ABORTED|EMPTY_RESPONSE)/i.test(m);
+}
+
+/**
+ * Navigates, retrying a transient failure.
+ *
+ * A single slow response used to end the whole run: `page.goto` throws, the node's
+ * `guarded()` wrapper catches it, marks the run partial and jumps to the report. That is
+ * right for a broken node and wrong for a site having a bad moment - and against a target
+ * on localhost, where navigation never fails, the difference never showed up. Exploring a
+ * real site, it ended two runs before the crawl had produced anything.
+ *
+ * Attempts share the context's navigation timeout, so the ceiling is bounded by it.
+ */
+export async function gotoWithRetry(
+  page: { goto: (url: string, opts: { waitUntil: "domcontentloaded" }) => Promise<unknown> },
+  url: string,
+  opts: { attempts?: number; delayMs?: number; log?: (m: string) => void; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const attempts = opts.attempts ?? navRetryAttempts();
+  const delay = opts.delayMs ?? 1000;
+  const nap = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+      return;
+    } catch (err) {
+      if (!isTransientNavError(err) || i === attempts - 1) throw err;
+      opts.log?.(`navigation to ${url} failed (${(err as Error).message.split("\n")[0]}); retrying ${i + 2}/${attempts}`);
+      await nap(delay * (i + 1));
+    }
+  }
+}
+
+/** How many times a navigation is attempted before the node gives up. */
+export function navRetryAttempts(): number {
+  const raw = Number(process.env.QA_PILOT_NAV_RETRIES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 3;
+}
+
 export class BrowserToolkit {
   private lastShot = 0;
   /** This toolkit's substitute for the planner's unique placeholder; every launch mints a fresh one. */
@@ -81,7 +150,8 @@ export class BrowserToolkit {
     const headless = opts.headless ?? process.env.QA_PILOT_HEADLESS !== "0";
     const browser = await chromium.launch({ headless });
     const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-    context.setDefaultTimeout(5000);
+    context.setDefaultTimeout(actionTimeoutMs());
+    context.setDefaultNavigationTimeout(navigationTimeoutMs());
     if (opts.screenshotDir) mkdirSync(opts.screenshotDir, { recursive: true });
     const cast = opts.runId && screencastEnabled() ? getScreencast(opts.runId) : undefined;
     return new BrowserToolkit(browser, context, opts.baseUrl.replace(/\/$/, ""), opts.bus, opts.agent ?? "browser", opts.screenshotDir, cast);
@@ -128,7 +198,8 @@ export class BrowserToolkit {
 
   async newContext(): Promise<BrowserContext> {
     const ctx = await this.browser.newContext({ viewport: { width: 1200, height: 800 } });
-    ctx.setDefaultTimeout(5000);
+    ctx.setDefaultTimeout(actionTimeoutMs());
+    ctx.setDefaultNavigationTimeout(navigationTimeoutMs());
     return ctx;
   }
 
@@ -152,7 +223,7 @@ export class BrowserToolkit {
     this.bus?.log(this.agent, `${step.action} ${step.role ?? ""} ${step.name ?? step.target ?? ""}`.trim());
     if (step.action === "goto") {
       const url = step.target?.startsWith("http") ? step.target : this.baseUrl + (step.target ?? "/");
-      await page.goto(url, { waitUntil: "domcontentloaded" });
+      await gotoWithRetry(page, url, { log: (m) => this.bus?.log(this.agent, m) });
       await this.screenshot(page, `goto ${step.target ?? ""}`);
       return { locator: page.locator("body"), code: "", strategy: "css" };
     }

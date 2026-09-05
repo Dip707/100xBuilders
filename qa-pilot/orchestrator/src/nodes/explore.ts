@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { BrowserToolkit } from "../browser/toolkit.js";
+import { BrowserToolkit, gotoWithRetry } from "../browser/toolkit.js";
 import { parseSnapshot } from "../browser/snapshot.js";
 import { outputDir, type Credentials, type FormInfo, type PageInfo, type RunState, type RunUpdate, type SiteMap, type Step } from "../state.js";
 import { BLOCKLIST, now, type NodeDeps } from "./deps.js";
@@ -138,8 +138,24 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   // Discover a login page first so we can log in before the crawl.
   await kit.act(page, { action: "goto", target: "/" });
   const homeLinks = await collectLinks(page);
-  const candidate = homeLinks.map((h) => pathOf(h.href)).find((p) => /log-?in|sign-?in/i.test(p));
-  if (candidate) loginPath = candidate;
+  // The landing page is very often the login page itself: saucedemo.com, and most internal
+  // tools and admin panels, put the form at "/" with nothing linking to it. Searching only
+  // for a *link* matching /login|sign-in/ finds nothing on such an app, so loginPath stayed
+  // null, tryLogin was never called, and the crawl reported a cheerful "1 page, 0 gated"
+  // having silently ignored the credentials it was given. So look for the form on the page
+  // we are already standing on first, and keep the link scan for apps that do link out to a
+  // separate login page (mini-shop does, which is why this held for so long).
+  const homeHasPasswordField = await page
+    .locator('input[type="password"]')
+    .count()
+    .then((n) => n > 0)
+    .catch(() => false);
+  if (homeHasPasswordField) {
+    loginPath = pathOf(page.url());
+  } else {
+    const candidate = homeLinks.map((h) => pathOf(h.href)).find((p) => /log-?in|sign-?in/i.test(p));
+    if (candidate) loginPath = candidate;
+  }
   // Pages reachable only from the unauthenticated nav (e.g. "/register") won't be linked once we're
   // logged in, so seed the queue with everything visible before login happens - filtered the same way
   // as the main loop (same-origin, not blocklisted, not a logout link).
@@ -151,6 +167,10 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
       pages[loginPath] = result.loginPage;
       opts.bus?.log("explorer", `logged in via ${loginPath}`);
     } else opts.bus?.log("explorer", `login attempt at ${loginPath} did not leave the page`);
+  } else if (opts.credentials) {
+    // Credentials were supplied and never used. Silence here reads as a successful crawl of
+    // a tiny app, when in fact everything behind the sign-in was missed.
+    opts.bus?.log("explorer", `credentials were provided but no login form was found; crawling unauthenticated`);
   }
 
   const queue: { path: string; depth: number }[] = [{ path: "/", depth: 0 }];
@@ -195,7 +215,9 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   const anonPage = await anon.newPage();
   for (const path of Object.keys(pages)) {
     try {
-      await anonPage.goto(origin + path, { waitUntil: "domcontentloaded" });
+      // Retried, because the catch below reads a failure as "not gated" - a wrong answer
+      // rather than a missing one, which would silently drop this route's authz flows.
+      await gotoWithRetry(anonPage, origin + path);
       await settle(anonPage);
       const landed = pathOf(anonPage.url());
       pages[path].gated = landed !== path && loginPath !== null && landed === loginPath;
