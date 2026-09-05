@@ -8,14 +8,16 @@ import { Icon, Spinner } from "@/components/ui";
  * scrolls, so a pasted paragraph never pushes the transcript off screen.
  */
 export function Composer({
-  value, onChange, onSend, onAttach, busy, placeholder = "Ask a question",
+  value, onChange, onSend, onAttach, busy, placeholder = "Ask a question", ariaLabel = "Message the intake assistant",
 }: {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
-  onAttach: (file: File) => void;
+  /** Absent for a chat that takes no documents; the paperclip is not drawn. */
+  onAttach?: (file: File) => void;
   busy: boolean;
   placeholder?: string;
+  ariaLabel?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -42,28 +44,32 @@ export function Composer({
         }}
         rows={1}
         placeholder={placeholder}
-        aria-label="Message the intake assistant"
+        aria-label={ariaLabel}
         className="max-h-[132px] w-full resize-none bg-transparent px-1 text-[13.5px] leading-relaxed text-fg placeholder:text-subtle focus:outline-none"
       />
       <div className="mt-1.5 flex items-center justify-between">
-        <label
-          className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-input text-muted transition-colors hover:bg-selected hover:text-fg"
-          title="Attach a PRD"
-        >
-          <Icon name="paperclip" size={14} />
-          <span className="sr-only">Attach a PRD</span>
-          <input
-            type="file"
-            accept=".md,.txt,.markdown,text/plain,text/markdown"
-            className="sr-only"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              // Reset so choosing the same file twice still fires a change event.
-              e.target.value = "";
-              if (file) onAttach(file);
-            }}
-          />
-        </label>
+        {onAttach ? (
+          <label
+            className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-input text-muted transition-colors hover:bg-selected hover:text-fg"
+            title="Attach a PRD"
+          >
+            <Icon name="paperclip" size={14} />
+            <span className="sr-only">Attach a PRD</span>
+            <input
+              type="file"
+              accept=".md,.txt,.markdown,text/plain,text/markdown"
+              className="sr-only"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                // Reset so choosing the same file twice still fires a change event.
+                e.target.value = "";
+                if (file) onAttach(file);
+              }}
+            />
+          </label>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
           onClick={() => ready && onSend()}

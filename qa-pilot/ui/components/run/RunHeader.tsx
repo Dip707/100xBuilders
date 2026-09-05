@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { StatusPill } from "@/components/ui";
+import Link from "next/link";
+import { Button, Icon, StatusPill } from "@/components/ui";
 import { type RunRecord } from "@/lib/api";
 import { formatDuration, relativeTime } from "@/lib/format";
 
@@ -27,6 +28,9 @@ export function RunHeader({ run }: { run: RunRecord }) {
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 pb-5 pt-7">
       <h1 className="min-w-0 truncate font-mono text-[19px] font-medium tracking-[-0.2px] text-fg">{run.url}</h1>
       <StatusPill status={run.status} />
+      <Link href={`/copilot?run=${encodeURIComponent(run.id)}`} className="ml-auto" title="Ask the copilot about this run or rerun some of its tests">
+        <Button variant="outline" size="sm"><Icon name="sparkles" size={13} /> Ask copilot</Button>
+      </Link>
       <p className="w-full text-[12.5px] text-muted">
         started {relativeTime(run.startedAt)} · <span className="font-mono">{elapsed}</span>
         {run.intent && <> · {run.intent}</>}
