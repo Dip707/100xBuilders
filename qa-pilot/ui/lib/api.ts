@@ -237,6 +237,8 @@ export async function fetchArtifact(runId: string, relPath: string): Promise<str
 }
 
 export const reportUrl = (runId: string) => `${API}/report/${encodeURIComponent(runId)}`;
+/** Same report, but with content-disposition: attachment so the browser saves it instead of opening it inline. */
+export const reportDownloadUrl = (runId: string) => `${reportUrl(runId)}?download=1`;
 
 /** The run's generated tests as a standalone Playwright project, ready to run outside qa-pilot. */
 export const suiteUrl = (runId: string) => `${API}/runs/${encodeURIComponent(runId)}/suite.zip`;

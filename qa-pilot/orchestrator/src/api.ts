@@ -773,7 +773,14 @@ export function createApi(opts: {
     if (!(await ownedRun(runId, c.get("user").id))) return c.text("not found", 404);
     const path = outputDir(runId) + "report.html";
     if (!existsSync(path)) return c.text("report not ready", 404);
-    return c.html(readFileSync(path, "utf8"));
+    const html = readFileSync(path, "utf8");
+    // Same file either way: the UI iframes and opens this inline by default; ?download=1 (the
+    // UI's "Download report" button) adds content-disposition so the browser saves it instead -
+    // the html anchor attribute alone can't force that, since the API is a different origin.
+    if (c.req.query("download")) {
+      return c.body(html, 200, { "content-type": "text/html; charset=utf-8", "content-disposition": `attachment; filename="${runId}-report.html"` });
+    }
+    return c.html(html);
   });
 
   app.get("/runs/:runId/files/*", async (c) => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Annotation } from "@langchain/langgraph";
+import { fileURLToPath } from "node:url";
 
 // ---------- Site map ----------
 export const ElementRefSchema = z.object({ role: z.string(), name: z.string() });
@@ -301,6 +302,6 @@ export function effectiveExpectations(state: Pick<RunState, "expectations">, flo
 }
 
 export function outputDir(runId: string): string {
-  const root = process.env.QA_PILOT_OUTPUT ?? new URL("../../output/", import.meta.url).pathname;
+  const root = process.env.QA_PILOT_OUTPUT ?? fileURLToPath(new URL("../../output/", import.meta.url));
   return `${root.endsWith("/") ? root : root + "/"}${runId}/`;
 }

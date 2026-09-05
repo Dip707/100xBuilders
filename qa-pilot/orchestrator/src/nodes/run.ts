@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { outputDir, type RunResults, type RunState, type RunUpdate, type Step, type TestResult } from "../state.js";
 import { writeOutput } from "../output.js";
 import { now, type NodeDeps } from "./deps.js";
 
-const RUNNER_DIR = resolve(new URL("../../../runner/", import.meta.url).pathname);
+const RUNNER_DIR = resolve(fileURLToPath(new URL("../../../runner/", import.meta.url)));
 
 type JsonResult = { status: string; duration: number; error?: { message?: string }; errors?: { message?: string }[]; errorLocation?: { file: string; line: number }; attachments?: { name: string; path?: string }[]; annotations?: { type: string; description?: string }[] };
 type JsonTest = { status: string; annotations?: { type: string; description?: string }[]; results: JsonResult[] };
@@ -164,8 +165,11 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
   opts.bus?.log("runner", `npx ${args.join(" ")}`);
   const stopWatching = watchLive(live, opts.bus, opts.files ? new Set(opts.files.map((f) => f.split("/").pop()!.replace(/\.spec\.ts$/, ""))) : undefined);
   await new Promise<void>((resolveRun) => {
+    // npx resolves to npx.cmd on Windows; node's spawn cannot exec a .cmd shim without a
+    // shell, so it always fails with ENOENT there unless shell: true is set.
     const child = spawn("npx", args, {
       cwd: RUNNER_DIR,
+      shell: process.platform === "win32",
       env: {
         ...process.env,
         QA_PILOT_TEST_DIR: testDir,
@@ -183,7 +187,15 @@ export async function runPlaywright(opts: { runId: string; baseUrl: string; logi
       opts.bus?.emit({ type: "error", node: "run", message: `playwright spawn failed: ${err.message}` });
       resolveRun();
     });
-    child.on("close", () => resolveRun());
+    // With shell: true (Windows), a missing npx/playwright no longer fails via the 'error'
+    // event above - cmd.exe launches fine and it's the shell that can't find the command, so
+    // the child just exits non-zero with no report on disk. Surface that the same way.
+    child.on("close", (code) => {
+      if (code !== 0 && !existsSync(jsonReport)) {
+        opts.bus?.emit({ type: "error", node: "run", message: `playwright spawn produced no report (exit code ${code}) - check npx and playwright are installed and on PATH` });
+      }
+      resolveRun();
+    });
   });
   stopWatching();
   let report: JsonReport;
