@@ -48,7 +48,10 @@ describe("full graph against mini-shop with the fake LLM", () => {
     const final = await done;
     await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ breakCoupon: false }) });
     const dir = process.env.QA_PILOT_OUTPUT + runId + "/";
-    for (const f of ["plan.md", "plan.json", "coverage.json", "results.json", "heal-log.json", "defects.json", "report.md", "report.html", "decisions.jsonl", "events.jsonl"]) expect(existsSync(dir + f), f).toBe(true);
+    for (const f of ["plan.md", "plan.json", "coverage.json", "results.json", "heal-log.json", "defects.json", "report.md", "report.html", "decisions.jsonl", "events.jsonl", "login-steps.json"]) expect(existsSync(dir + f), f).toBe(true);
+    const loginSteps = readFileSync(dir + "login-steps.json", "utf8");
+    expect(loginSteps).not.toContain("demo1234");
+    expect(loginSteps).toContain("{{password}}");
     expect(existsSync(dir + "tests/auth-002.spec.ts")).toBe(true);
     const passed = final.results!.tests.filter((t) => t.status === "passed").map((t) => t.id);
     expect(passed).toEqual(expect.arrayContaining(["auth-001", "auth-002", "auth-003", "orders-authz-001"]));
