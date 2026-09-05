@@ -171,6 +171,24 @@ export class BrowserToolkit {
     return file;
   }
 
+  /**
+   * Resolves a step's target, giving a client-rendered page time to draw it. `goto` returns at
+   * domcontentloaded, and a React app puts its form in the document well after that, so a
+   * one-shot lookup right after navigation said "unresolved" for every first step of every
+   * flow on such an app and the planner dropped the whole plan. The wait is bounded by the
+   * element timeout: "this locator does not resolve" is still a verdict, it just is not
+   * pronounced before the page has had a chance to render.
+   */
+  private async resolveWithin(page: Page, target: { role?: string; name?: string }): Promise<ResolvedLocator | null> {
+    const deadline = Date.now() + ELEMENT_TIMEOUT_MS;
+    let r = await resolveLocator(page, target);
+    while (!r && Date.now() < deadline) {
+      await page.waitForTimeout(250);
+      r = await resolveLocator(page, target);
+    }
+    return r;
+  }
+
   /** Executes one step. Returns the resolved locator (a placeholder for goto) or null when unresolvable. */
   async act(page: Page, step: Step): Promise<ResolvedLocator | null> {
     this.bus?.log(this.agent, `${step.action} ${step.role ?? ""} ${step.name ?? step.target ?? ""}`.trim());
@@ -184,7 +202,7 @@ export class BrowserToolkit {
       await this.screenshot(page, `goto ${step.target ?? ""}`);
       return { locator: page.locator("body"), code: "", strategy: "css" };
     }
-    const r = await resolveLocator(page, { role: step.role, name: step.name });
+    const r = await this.resolveWithin(page, { role: step.role, name: step.name });
     if (!r) {
       this.bus?.log(this.agent, `unresolved: ${step.role ?? ""} "${step.name ?? ""}"`);
       return null;

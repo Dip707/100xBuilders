@@ -25,8 +25,30 @@ async function extractForms(page: Page, path: string): Promise<FormInfo[]> {
 }
 
 /**
- * The route a URL addresses: its pathname, plus the fragment when the app routes on hashes
- * (`/#/faq`). Every page key in the site map is one of these, and `goto` accepts them as-is.
+ * Query parameters that never name a route: where to go after login, one-shot tokens and
+ * tracking. Everything else in the query is a candidate route parameter.
+ */
+const NOISE_PARAM = /^(redirect(_?to|_?uri|_?url)?|next|return(_?to|_?url)?|continue|callback|token|code|state|nonce|session|ref|fbclid|gclid|utm_.*)$/i;
+/** A parameter that names an entity (`id`, `item_id`, `productId`), never a view. */
+const ID_PARAM = /(^|_|-)id$|Id$/;
+/** A value that reads as a view name: a slug, not a number or an identifier. */
+const SLUG_VALUE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * Whether a query parameter is part of the route. Routes are named and entities are numbered:
+ * `?page=users` and `?tab=access` select a view, so an app that routes this way has as many
+ * routes as it has values, and keying them all as one path hid every one of them. `?id=42`
+ * selects a record on the same view, and keying every record as a route would crawl a
+ * catalogue one product at a time.
+ */
+export function isRouteParam(key: string, value: string): boolean {
+  return !NOISE_PARAM.test(key) && !ID_PARAM.test(key) && SLUG_VALUE.test(value);
+}
+
+/**
+ * The route a URL addresses: its pathname, the query the app routes on (see isRouteParam,
+ * sorted so one view keys one way), plus the fragment when the app routes on hashes (`/#/faq`).
+ * Every page key in the site map is one of these, and `goto` accepts them as-is.
  */
 export function pathOf(url: string): string {
   const u = new URL(url);
@@ -35,7 +57,9 @@ export function pathOf(url: string): string {
   // relative link the app renders resolves against the trailing-slash base into a doubled,
   // 404-ing route (e.g. "/sso/login/sso/login").
   const pathname = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, "") : u.pathname;
-  return pathname + (u.hash.startsWith("#/") ? u.hash : "");
+  const params = [...u.searchParams.entries()].filter(([k, v]) => isRouteParam(k, v)).sort(([a], [b]) => a.localeCompare(b));
+  const query = params.length ? "?" + new URLSearchParams(params).toString() : "";
+  return pathname + query + (u.hash.startsWith("#/") ? u.hash : "");
 }
 
 /** Gives client-side rendering a moment to finish; a page that never goes idle is read as it is. */
@@ -225,8 +249,9 @@ async function tryLogin(
   // a couple of seconds after the network goes idle. Wait for the URL to actually leave the login
   // path (or the password field to disappear) before judging the attempt, so a slow redirect is
   // not misread as "did not leave the page". A genuine rejection stays put and times out here.
+  const loginPathname = loginPath.split("?")[0].replace(/\/+$/, "");
   await page
-    .waitForFunction((p) => location.pathname.replace(/\/+$/, "") !== p, loginPath.replace(/\/+$/, ""), { timeout: 8000 })
+    .waitForFunction((p) => location.pathname.replace(/\/+$/, "") !== p, loginPathname, { timeout: 8000 })
     .catch(() => {});
   await page.waitForLoadState("networkidle").catch(() => {});
   const landedPath = pathOf(page.url());

@@ -24,7 +24,9 @@ Claude with structured outputs: turning the site map into flows, repairing an un
 ## Exploring single-page apps
 
 The crawler waits for the network to go idle before reading a page, so links rendered by JavaScript are seen.
-Routes are keyed by pathname plus the fragment when the app routes on hashes (`/#/faq`), and `goto` accepts those keys as they are.
+Routes are keyed by pathname, plus the query when the app routes on it (`/ui?page=users`), plus the fragment when it routes on hashes (`/#/faq`), and `goto` accepts those keys as they are.
+A query parameter counts as part of the route when its value is a slug; numeric and id-style parameters select a record on the same view and are dropped, and redirect, token and tracking parameters are dropped as noise, so a catalogue is one route and a login page with a `redirect_to` is one login page.
+Locator resolution waits, up to the element timeout, for a client-rendered page to draw the element it is looking for; a one-shot lookup right after navigation used to fail the first step of every flow on a React app.
 Controls that route without being a usable link are probed once each: anchors with no href, an empty one or `#`, `[role=link]` without an href, `data-href` and `routerlink` attributes, and any button outside a form, including submit-styled ones that have no form to submit.
 The crawler clicks the control, gives the router a moment to change the URL, and records the route it lands on when it stays on the origin.
 The page is put back only when the click navigated or left a dialog or menu open that would cover the next control; a click that did neither costs an Escape, since reloading after every one of a dashboard's dozens of buttons made the crawl look stuck on a single page.

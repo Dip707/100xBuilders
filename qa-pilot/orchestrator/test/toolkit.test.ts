@@ -61,6 +61,14 @@ describe("BrowserToolkit.act and checkExpectation", () => {
     expect(url.ok).toBe(true);
     await page.close();
   });
+  it("waits for a client-rendered element instead of failing on the first look", async () => {
+    const page = await kit.newPage();
+    await page.setContent('<div id="app"></div><script>setTimeout(() => { document.getElementById("app").innerHTML = \'<label>Username <input></label><button>Sign in</button>\'; }, 1500);</script>');
+    const r = await kit.act(page, { action: "fill", role: "textbox", name: "Username", value: "admin" });
+    expect(r).not.toBeNull();
+    expect(await page.getByRole("textbox", { name: "Username" }).inputValue()).toBe("admin");
+    await page.close();
+  });
   it("returns null from act when the element is missing", async () => {
     const page = await kit.newPage();
     await kit.act(page, { action: "goto", target: "/login" });

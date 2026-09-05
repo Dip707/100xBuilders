@@ -140,4 +140,17 @@ describe("pathOf", () => {
   it("preserves a hash route", () => {
     expect(pathOf("https://x.test/#/faq")).toBe("/#/faq");
   });
+  it("keeps a query the app routes on, so ?page=x views are distinct routes", () => {
+    expect(pathOf("https://x.test/ui/?page=guardrails")).toBe("/ui?page=guardrails");
+    expect(pathOf("https://x.test/ui/?tab=access&page=users")).toBe("/ui?page=users&tab=access");
+  });
+  it("drops redirect, token and tracking params, which are noise, not routes", () => {
+    expect(pathOf("https://x.test/ui/login/?redirect_to=https%3A%2F%2Fx.test%2Fui")).toBe("/ui/login");
+    expect(pathOf("https://x.test/ui/?page=users&utm_source=mail&token=abc")).toBe("/ui?page=users");
+  });
+  it("drops entity params, so a catalogue is one route rather than one per record", () => {
+    expect(pathOf("https://x.test/item.html?id=1")).toBe("/item.html");
+    expect(pathOf("https://x.test/orders?order_id=88&productId=abc&tab=2")).toBe("/orders");
+    expect(pathOf("https://x.test/ui/?page=users&id=7")).toBe("/ui?page=users");
+  });
 });
