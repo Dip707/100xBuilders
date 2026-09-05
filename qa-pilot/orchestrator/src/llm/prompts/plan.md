@@ -4,6 +4,8 @@ Produce a structured test plan as a list of flows.
 
 Rules:
 - Every step must reference an element that appears in the site map for that page (role and accessible name exactly as listed). Never invent pages or elements.
+- A control listed with a count, such as "Add to cart" (x6), is one control repeated per item in a list; a step naming it acts on the first one, so "add a product to the cart" is a single click on "Add to cart". Prefer that over guessing a more specific name that is not in the site map.
+- A link listed under a name like "shopping-cart-link" is an icon-only control the crawler named after its test attribute; refer to it by exactly that name.
 - Use action "goto" with a path for navigation, "fill" for textboxes, "click" for buttons and links, "select" for comboboxes, "check" for checkboxes.
 - Cover the whole app, not just the way in. Every route in the site map that has a form or buttons needs at least one flow that actually uses it, and a route behind the login wall is covered only by a flow that exercises what is on the page - an authz flow proves the door is locked, it does not test the room. Spread the flow budget across the routes first, then deepen the areas that matter most; a plan where most flows sit on the login form is a bad plan even when the login form is thoroughly tested.
 - For each form produce at least one happy flow, one negative flow (wrong or invalid input), and one empty-submit flow whose title contains the word "empty".

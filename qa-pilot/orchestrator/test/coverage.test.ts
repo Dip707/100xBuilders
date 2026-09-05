@@ -213,3 +213,59 @@ describe("the coverage gate reads the score it computed", () => {
     expect(v.untested_risk.map((u) => u.flow)).toEqual(["/cart"]);
   });
 });
+
+describe("scoreCoverage credits the routes a flow really reaches", () => {
+  // A checkout flow goes inventory -> cart -> checkout by clicking, the way a user does. Only its
+  // first step is a goto, so the scorer used to see a flow that never left the inventory page.
+  const shop: SiteMap = {
+    origin: "http://x", loginPath: "/", loginSteps: [],
+    pages: {
+      "/": { url: "http://x/", path: "/", title: "Login", gated: false, snapshot: "", buttons: [{ role: "button", name: "Login" }], links: [],
+        forms: [{ id: "/#0", submit: { role: "button", name: "Login" }, fields: [{ role: "textbox", name: "User", type: "text", required: true }, { role: "textbox", name: "Password", type: "password", required: true }] }] },
+      "/inventory": { url: "http://x/inventory", path: "/inventory", title: "Products", gated: true, snapshot: "", buttons: [{ role: "button", name: "Add to cart" }], links: [], forms: [] },
+      "/cart": { url: "http://x/cart", path: "/cart", title: "Cart", gated: true, snapshot: "", buttons: [{ role: "button", name: "Checkout" }], links: [], forms: [] },
+      "/checkout": { url: "http://x/checkout", path: "/checkout", title: "Checkout", gated: true, snapshot: "", buttons: [{ role: "button", name: "Continue" }], links: [],
+        forms: [{ id: "/checkout#0", submit: { role: "button", name: "Continue" }, fields: [{ role: "textbox", name: "First Name", type: "text", required: true }] }] },
+    },
+  };
+  const clickThrough = (id: string, category: Flow["category"], title: string): Flow => ({
+    ...mk(id, category, title, "/inventory"),
+    preconditions: ["logged_in"],
+    steps: [{ action: "goto", target: "/inventory" }, { action: "click", role: "button", name: "Add to cart" }, { action: "click", role: "link", name: "cart" }, { action: "click", role: "button", name: "Checkout" }, { action: "click", role: "button", name: "Continue" }],
+    visits: ["/inventory", "/cart", "/checkout"],
+  });
+  const flows = [
+    mk("auth-001", "happy", "User logs in", "/"),
+    mk("auth-002", "negative", "Wrong password is rejected", "/"),
+    mk("auth-003", "negative", "Empty submit shows validation", "/"),
+    clickThrough("checkout-001", "happy", "Fill in the checkout form and continue"),
+    clickThrough("checkout-002", "negative", "Checkout rejects a postal code made of letters"),
+    clickThrough("checkout-003", "edge", "Empty checkout form shows the first name error"),
+    mk("cart-001", "authz", "Cart is blocked logged out", "/cart"),
+    mk("checkout-004", "authz", "Checkout is blocked logged out", "/checkout"),
+    mk("catalog-001", "authz", "Products are blocked logged out", "/inventory"),
+  ];
+
+  it("counts a form as covered when the flow clicked its way there", () => {
+    const v = scoreCoverage(shop, flows, {});
+    expect(v.gaps.filter((g) => g.target === "form:/checkout")).toHaveLength(0);
+    expect(v.gaps.filter((g) => g.kind === "missing_route_flow")).toHaveLength(0);
+    expect(v.untested_risk).toHaveLength(0);
+    expect(v.score).toBeGreaterThanOrEqual(COVERAGE_THRESHOLD);
+  });
+
+  it("reads a flow that leaves one field out as the form's negative case, not its empty case", () => {
+    const oneFieldOut = flows.map((f) => (f.id === "checkout-002" ? { ...f, title: "Reject checkout when the postal code is missing from the form" } : f));
+    const v = scoreCoverage(shop, oneFieldOut, {});
+    expect(v.gaps.filter((g) => g.kind === "missing_negative" && g.target === "form:/checkout")).toHaveLength(0);
+    expect(v.gaps.filter((g) => g.kind === "missing_empty_submit" && g.target === "form:/checkout")).toHaveLength(0);
+  });
+
+  it("does not treat the filler words of an intent as areas to cover", () => {
+    const v = scoreCoverage(shop, flows, { intent: "cover the product catalog, the cart and checkout end to end, not just login" });
+    const words = v.gaps.filter((g) => g.kind === "intent_uncovered").map((g) => g.target);
+    expect(words).not.toContain("cover");
+    expect(words).not.toContain("just");
+    expect(words).not.toContain("end");
+  });
+});

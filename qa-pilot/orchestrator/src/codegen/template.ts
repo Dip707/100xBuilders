@@ -21,7 +21,11 @@ export function valueCode(s: string): string {
 
 export function actionCode(step: Pick<Step, "action" | "target" | "value">, locatorCode: string): string {
   switch (step.action) {
-    case "goto": return `await page.goto(${q(step.target ?? "/")});`;
+    // The same readiness every agent validated the flow with. Waiting for "load" also waits
+    // for every third-party resource a public site pulls in, and one that hangs turns a page
+    // that is already usable into a navigation timeout; the locators that follow wait on
+    // their own for what they need.
+    case "goto": return `await page.goto(${q(step.target ?? "/")}, { waitUntil: 'domcontentloaded' });`;
     case "fill": return `await ${locatorCode}.fill(${valueCode(step.value ?? "")});`;
     case "click": return `await ${locatorCode}.click();`;
     case "select": return `await ${locatorCode}.selectOption(${valueCode(step.value ?? "")});`;

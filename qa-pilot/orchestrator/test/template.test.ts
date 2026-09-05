@@ -34,7 +34,7 @@ describe("actionCode", () => {
     expect(actionCode({ action: "select", value: "x" }, loc)).toBe(`await ${loc}.selectOption('x');`);
     expect(actionCode({ action: "press", value: "Enter" }, loc)).toBe(`await ${loc}.press('Enter');`);
     expect(actionCode({ action: "check" }, loc)).toBe(`await ${loc}.check();`);
-    expect(actionCode({ action: "goto", target: "/x" }, "")).toBe("await page.goto('/x');");
+    expect(actionCode({ action: "goto", target: "/x" }, "")).toBe("await page.goto('/x', { waitUntil: 'domcontentloaded' });");
   });
 });
 

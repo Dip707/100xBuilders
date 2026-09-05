@@ -1,19 +1,31 @@
 import { z } from "zod";
 import { BrowserToolkit } from "../browser/toolkit.js";
-import { FlowSchema, StepSchema, outputDir, type Flow, type RunState, type RunUpdate, type SiteMap } from "../state.js";
+import { FlowInputSchema, StepSchema, outputDir, type Flow, type RunState, type RunUpdate, type SiteMap } from "../state.js";
 import { writeOutput } from "../output.js";
+import { pathOf } from "./explore.js";
 import { now, type NodeDeps } from "./deps.js";
 
-export const PlanOutputSchema = z.object({ flows: z.array(FlowSchema) });
-/** Same as FlowSchema but allows an empty steps array, which means "could not be repaired". */
-export const RepairedFlowSchema = FlowSchema.extend({ steps: z.array(StepSchema) });
+export const PlanOutputSchema = z.object({ flows: z.array(FlowInputSchema) });
+/** Same as the model-facing flow but allows an empty steps array, which means "could not be repaired". */
+export const RepairedFlowSchema = FlowInputSchema.extend({ steps: z.array(StepSchema) });
+
+/**
+ * Names in first-seen order, a repeated one written once with its count: a product grid lists
+ * "Add to cart" six times, and the planner needs to know it is one control per item rather than
+ * six distinct buttons - a step naming it acts on the first.
+ */
+export function collapse(names: string[]): string {
+  const counts = new Map<string, number>();
+  for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+  return [...counts].map(([n, c]) => (c > 1 ? `"${n}" (x${c})` : `"${n}"`)).join(", ");
+}
 
 function siteMapSummary(map: SiteMap): string {
   const lines: string[] = [`origin: ${map.origin}`, `loginPath: ${map.loginPath ?? "none"}`];
   for (const p of Object.values(map.pages)) {
     lines.push(`\n## ${p.path} (${p.title})${p.gated ? " [GATED: requires login]" : ""}`);
     for (const f of p.forms) lines.push(`form ${f.id}: fields ${f.fields.map((x) => `${x.role} "${x.name}"${x.required ? " required" : ""} type=${x.type}`).join(", ")}; submit ${f.submit ? `button "${f.submit.name}"` : "none"}`);
-    if (p.buttons.length) lines.push(`buttons: ${p.buttons.map((b) => `"${b.name}"`).join(", ")}`);
+    if (p.buttons.length) lines.push(`buttons: ${collapse(p.buttons.map((b) => b.name))}`);
     if (p.links.length) lines.push(`links: ${p.links.map((l) => `"${l.text}" -> ${new URL(l.href).pathname}`).join(", ")}`);
   }
   return lines.join("\n");
@@ -32,19 +44,48 @@ export function buildPlanInput(state: RunState): string {
   return parts.filter(Boolean).join("\n\n");
 }
 
-export async function dryWalk(kit: BrowserToolkit, flow: Flow, siteMap: SiteMap): Promise<{ ok: true } | { ok: false; step: number; snapshot: string }> {
+/**
+ * Walks the flow on the live app and reports whether every step resolved, plus the routes the
+ * flow was on after each of its own steps. The login fixture's landing page is not one of them:
+ * every signed-in flow starts there, and crediting it would make the entrance look tested by
+ * flows that only pass through.
+ */
+export type WalkResult = { ok: true; visits: string[] } | { ok: false; step: number; snapshot: string; error?: string };
+
+export async function dryWalk(kit: BrowserToolkit, flow: Flow, siteMap: SiteMap): Promise<WalkResult> {
   const page = await kit.newPage();
   try {
     if (flow.preconditions.includes("logged_in")) {
       for (const s of siteMap.loginSteps) if (!(await kit.act(page, s))) return { ok: false, step: -1, snapshot: await kit.snapshot(page) };
     }
+    const visits: string[] = [];
     for (let i = 0; i < flow.steps.length; i++) {
       if (!(await kit.act(page, flow.steps[i]))) return { ok: false, step: i, snapshot: await kit.snapshot(page) };
+      const at = pathOf(page.url());
+      if (visits[visits.length - 1] !== at) visits.push(at);
     }
-    return { ok: true };
+    return { ok: true, visits };
   } finally {
     await page.close();
   }
+}
+
+/**
+ * A dry walk that throws - a page that never loads, a browser that went away - is retried once
+ * and then reported as a failed walk for that flow alone. Whatever went wrong with one flow's
+ * page is no reason to abandon the eleven others, and no reason to end the run with no tests.
+ */
+async function walkSafely(kit: BrowserToolkit, flow: Flow, siteMap: SiteMap, deps: NodeDeps): Promise<WalkResult> {
+  let error = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await dryWalk(kit, flow, siteMap);
+    } catch (e) {
+      error = (e as Error).message.split("\n")[0];
+      deps.bus.log("planner", `dry walk of ${flow.id} failed: ${error}; ${attempt === 0 ? "retrying once" : "giving up on it"}`);
+    }
+  }
+  return { ok: false, step: -1, snapshot: "", error };
 }
 
 export function renderPlanMd(flows: Flow[]): string {
@@ -77,8 +118,8 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
   const unresolved: string[] = [];
   try {
     for (const flow of flows) {
-      let result = await dryWalk(kit, flow, state.siteMap!);
-      let current = flow;
+      let result = await walkSafely(kit, flow, state.siteMap!, deps);
+      let current: Flow = flow;
       if (!result.ok && result.step >= 0) {
         deps.bus.log("planner", `flow ${flow.id} step ${result.step} unresolved, asking for repair`);
         const repaired = await deps.llm.complete({
@@ -90,13 +131,14 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
         llmCalls++;
         if (repaired.steps.length > 0) {
           current = repaired as Flow;
-          result = await dryWalk(kit, current, state.siteMap!);
+          result = await walkSafely(kit, current, state.siteMap!, deps);
         }
       }
-      if (result.ok) kept.push(current);
+      if (result.ok) kept.push({ ...current, visits: result.visits });
       else {
         unresolved.push(flow.id);
-        deps.bus.decision({ node: "plan", reason: `dropped flow ${flow.id}: step could not be resolved on the live page`, evidence: [flow.title], next: "continue", at: now() });
+        const why = !result.ok && result.error ? `its page could not be walked (${result.error})` : "step could not be resolved on the live page";
+        deps.bus.decision({ node: "plan", reason: `dropped flow ${flow.id}: ${why}`, evidence: [flow.title], next: "continue", at: now() });
       }
     }
   } finally {

@@ -11,8 +11,18 @@ export const MAX_PLAN_ITERATIONS = 3;
 
 type Gap = CoverageVerdict["gaps"][number];
 
-const touches = (f: Flow, path: string) => f.steps.some((s) => s.action === "goto" && s.target === path) || f.title.toLowerCase().includes(path.replace(/^\//, "").toLowerCase());
-const isEmptySubmit = (f: Flow) => /empty|blank|required|without|no input|missing/i.test(f.title);
+/** Whether a flow exercises a route: it navigates there, the dry walk saw it there, or its title names it. */
+const touches = (f: Flow, path: string) =>
+  f.steps.some((s) => s.action === "goto" && s.target === path) ||
+  (f.visits ?? []).includes(path) ||
+  f.title.toLowerCase().includes(path.replace(/^\//, "").toLowerCase());
+
+/** Words an intent is made of that never name an area of the app. */
+const INTENT_FILLER = new Set(["focus", "with", "and", "the", "on", "cover", "covering", "just", "only", "not", "end", "ends", "test", "tests", "testing", "flow", "flows", "also", "then", "that", "this", "from", "into", "please", "make", "sure", "every", "each", "well", "more", "than", "rather", "especially", "particularly", "mainly", "mostly", "should", "must", "need", "needs", "check", "checks", "verify", "whole", "entire", "full", "fully", "properly", "along", "through", "beyond", "including", "include", "plus"]);
+/** An empty-submit flow says so in its title, as the planner prompt requires. "Missing" and
+ *  "required" are not enough: "rejects checkout when the postal code is missing" leaves one
+ *  field out and is the form's negative case, not its empty case. */
+const isEmptySubmit = (f: Flow) => /\bempty\b|\bblank\b|no input|without (any |entering |filling )?(input|data|values|fields)|nothing (entered|filled|typed)/i.test(f.title);
 
 export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: string; prdRequirements?: string[]; prdMatrix?: Record<string, string[]> }): CoverageVerdict {
   const gaps: Gap[] = [];
@@ -64,7 +74,7 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
 
   // 4. intent keywords
   if (opts.intent) {
-    const words = opts.intent.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3 && !["focus", "with", "and", "the", "on"].includes(w));
+    const words = [...new Set(opts.intent.toLowerCase().split(/[^a-z0-9]+/))].filter((w) => w.length > 3 && !INTENT_FILLER.has(w));
     if (words.length) {
       const hit = words.filter((w) => flows.some((f) => f.title.toLowerCase().includes(w)));
       checks.intent = hit.length / words.length;
