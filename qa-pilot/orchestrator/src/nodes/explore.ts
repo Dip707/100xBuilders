@@ -29,7 +29,12 @@ async function extractForms(page: Page, path: string): Promise<FormInfo[]> {
  */
 export function pathOf(url: string): string {
   const u = new URL(url);
-  return u.pathname + (u.hash.startsWith("#/") ? u.hash : "");
+  // Normalise a trailing slash away ("/sso/login/" -> "/sso/login") but keep the root as "/".
+  // Without this, one route is keyed two ways, so the same page is crawled twice, and any
+  // relative link the app renders resolves against the trailing-slash base into a doubled,
+  // 404-ing route (e.g. "/sso/login/sso/login").
+  const pathname = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, "") : u.pathname;
+  return pathname + (u.hash.startsWith("#/") ? u.hash : "");
 }
 
 /** Gives client-side rendering a moment to finish; a page that never goes idle is read as it is. */
@@ -174,6 +179,13 @@ async function tryLogin(
     { action: "click", role: "button", name: form.submit.name, value: undefined, intent: "submit login form" },
   ];
   for (const s of steps.slice(1)) if (!(await kit.act(page, s))) return null;
+  // The submit fires an async auth request, then the SPA redirects on the client - which can take
+  // a couple of seconds after the network goes idle. Wait for the URL to actually leave the login
+  // path (or the password field to disappear) before judging the attempt, so a slow redirect is
+  // not misread as "did not leave the page". A genuine rejection stays put and times out here.
+  await page
+    .waitForFunction((p) => location.pathname.replace(/\/+$/, "") !== p, loginPath.replace(/\/+$/, ""), { timeout: 8000 })
+    .catch(() => {});
   await page.waitForLoadState("networkidle").catch(() => {});
   const landedPath = pathOf(page.url());
   // Still on the login page, or shown it again: the credentials did not take.

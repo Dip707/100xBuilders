@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
-import { exploreNode, crawl, filterLinks } from "../src/nodes/explore.js";
+import { exploreNode, crawl, filterLinks, pathOf } from "../src/nodes/explore.js";
 import { initialState } from "../src/state.js";
 import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
@@ -112,5 +112,18 @@ describe("BLOCKLIST", () => {
     for (const label of ["Checkout", "Continue Shopping", "Back to products", "Add to cart", "Cancel"]) {
       expect(BLOCKLIST.test(label), label).toBe(false);
     }
+  });
+});
+
+describe("pathOf", () => {
+  it("strips a trailing slash so one route keys one way", () => {
+    expect(pathOf("https://x.test/sso/login/")).toBe("/sso/login");
+    expect(pathOf("https://x.test/sso/login")).toBe("/sso/login");
+  });
+  it("keeps the root as /", () => {
+    expect(pathOf("https://x.test/")).toBe("/");
+  });
+  it("preserves a hash route", () => {
+    expect(pathOf("https://x.test/#/faq")).toBe("/#/faq");
   });
 });
