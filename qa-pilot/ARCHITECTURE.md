@@ -25,8 +25,25 @@ Claude with structured outputs: turning the site map into flows, repairing an un
 
 The crawler waits for the network to go idle before reading a page, so links rendered by JavaScript are seen.
 Routes are keyed by pathname plus the fragment when the app routes on hashes (`/#/faq`), and `goto` accepts those keys as they are.
-Navigation controls that are not anchors (buttons inside `nav`, `header` or `[role=navigation]`, `[role=link]` without an href, `data-href` and `routerlink` attributes) are probed once each: the crawler clicks the control, records the route it lands on when it stays on the origin, and reloads the page before the next probe.
-Submit buttons are never probed, blocklisted labels (delete, remove, log out, clear, ...) are never pressed, and a label is probed once per crawl.
+Controls that route without being a usable link are probed once each: anchors with no href, an empty one or `#`, `[role=link]` without an href, `data-href` and `routerlink` attributes, and any button outside a form, including submit-styled ones that have no form to submit.
+The crawler clicks the control, records the route it lands on when it stays on the origin, and reloads the page after every probe so a menu or overlay one click opened never covers the next.
+Buttons inside a form belong to that form's flow and are left alone, blocklisted labels (delete, remove, log out, reset, clear, ...) are never pressed, and a label is probed once per crawl with a ceiling on probes per page and per crawl.
+An icon-only control is named after its `aria-label`, `data-test`, `data-testid`, `title`, `name` or `id`, so the planner can refer to it.
+
+## Getting past the login wall
+
+A demo app is usually a login form with the whole application behind it, and a plan that only exercises the login form is a bad plan even when the login form is thoroughly tested.
+When the landing page is itself the login form there is no "Log in" link to find, so the crawler treats a page with a password field as the login page.
+The route a successful login lands on is seeded into the crawl queue, since nothing outside the wall links to it.
+A route counts as gated when an anonymous visit is bounced to the login path or when the app answers in place with the login screen at the same URL, which is what a demo app usually does.
+The planner's dry walk resolves a control that repeats across a list, such as one "Add to cart" per product, to the first one; the site map lists such a control once with its count, and the generated locator carries `.first()`.
+A control named after its `data-test` attribute resolves through that attribute, which Playwright's `getByTestId` does not read.
+The dry walk records the routes a flow was on after each of its own steps (`visits`), and the coverage scorer credits a route to a flow that navigated there, was seen there, or names it in its title, so a checkout flow that clicks its way through the cart covers the checkout form even though its only `goto` is the inventory page.
+A route with a form or buttons that no non-authz flow exercises is a `missing_route_flow` gap and the heaviest coverage check: an authz flow proves the door is locked, it does not test the room.
+Flow ids are prefixed with the area of the app they belong to ("cart-004" for the cart's authz flow, never "auth-004"), which is what the report and the UI group by.
+A dry walk that throws, because a page never loaded, is retried once and then costs that flow alone; a screenshot that cannot be taken costs a picture, never a step.
+An expectation whose role and name match several elements even exactly (a product's image link and title link) is verified against the first and emitted with `.first()`, for the same reason.
+Tests the classifier sends back for a rerun ride through the healer with the healed ones: the graph visits the healer first, and a heal that did not take is no reason to drop a navigation timeout that only needed a second try.
 
 ## Live assertion validation
 
@@ -100,6 +117,19 @@ Runs that did not ask for review never route through the node, so the default pi
 `POST /runs/:id/tests/:testId/rerun` executes one generated spec again in place, merges the fresh result into `results.json`, and appends the events to the run's log so the test's latest status moves without a new run.
 The target's login steps carry its credentials and are never written to disk, so after an API restart only tests that do not sign in can be re-run; the route says so instead of failing at login.
 
+## The copilot
+
+A copilot turn is two calls.
+`POST /copilot/chats/:id/messages` resolves the run (an id named in the message, then the chat's scope, then the newest finished run for the scope's URL), builds a catalogue of that run's tests from `plan.json`, `results.json`, `defects.json`, `heal-log.json` and the classifications in `events.jsonl`, and makes one structured Claude call that returns `rerun`, `answer` or `clarify` plus test ids.
+Every id is checked against the catalogue before anything is scheduled; an id the model invented is dropped, and a rerun left with nothing becomes a server-written clarification listing the run's real failures.
+`POST /copilot/chats/:id/execute` runs the pending selection in one Playwright invocation through `rerunTests`, merges the results into `results.json`, and appends the outcome to the chat.
+
+The report node writes `login-steps.json`, the recorded sign-in with `{{username}}` and `{{password}}` in place of the values, the same redaction the suite bundle performs.
+When the run's login context is no longer in memory, the execute call hydrates that file with credentials sent in the request and discards them when it returns.
+
+Copilot chats share the `chats` collection with the intake chat under `kind: "copilot"`; documents without a kind are intake chats.
+Live progress reaches the chat through the run's existing `/events/:runId` stream opened with `?follow=1`, which keeps it open past the run's `done` so the rerun's `test_start` and `test_result` events arrive; the screen filters them to events after the plan's timestamp so a replayed old result is not mistaken for this rerun's.
+
 ## Milestone log
 
 | Milestone | Command | Result |
@@ -107,6 +137,7 @@ The target's login steps carry its credentials and are never written to disk, so
 | M1 explore + plan | `npm run qa-pilot -- run http://localhost:3005 --username demo@shop.test --password demo1234 --intent "focus on auth and checkout"` | verified 2026-09-04 (`output/fix-verify-1`): 11 pages crawled, 3 gated; 12 flows across 4 categories (3 happy, 5 negative, 3 authz, 1 error_state), none dropped |
 | M2 generate + run | same run | verified: 12 of 12 flows generated, 11 of 12 passed on first run (92%); the one failure is a planner assumption mini-shop does not meet (registration does not sign the user in) and was escalated as a defect with that rationale |
 | M3 heal + escalate | generate against the healthy app, then `./demo.sh rename && ./demo.sh coupon` the moment the run node starts (intent "focus on auth, checkout and the coupon code") | verified 2026-09-05 (`output/fix-verify-chaos4`): the two order flows failed on the renamed button, were classified `script`, healed to `Complete purchase` with the diff in the report and passed on rerun; the two coupon flows were classified `defect` at 0.9 with `POST /api/coupon returned 500` in evidence and ticketed once each |
+| Beyond the login wall | `npm run qa-pilot -- run https://www.saucedemo.com --username standard_user --password secret_sauce --intent "cover the product catalog, the cart and checkout end to end, not just login"` | verified 2026-09-05 (`output/run-2026-09-05T06-47-00`): the first plan kept all 12 flows across auth, catalog, cart and checkout with none dropped at the dry walk and scored 0.925; 10 of 12 passed on the first execution, the two logged-out navigation timeouts were rerun and passed, and the report closed with 12 of 12, no false defects, 4 LLM calls. The same target earlier that day dropped every catalog, cart and checkout flow as unresolvable and ended with no tests |
 | M4 coverage loop | `npm run qa-pilot -- run http://localhost:3005 --username demo@shop.test --password demo1234` | verified 2026-09-04 (`output/run-2026-09-04T17-38-19`): first plan scored 0.61 with 9 gaps and was sent back with the gap list; the second plan scored 0.93 with 4 gaps and went to generation |
 | M5 UI + report | UI run | verified live on a partial run (fake LLM stops at planning); full-run screenshot pending a real API key |
 | M6 demo target | mini-shop with three chaos toggles | verified: `renameCheckoutButton`, `breakCoupon`, `cosmeticChange` all work via `POST /__chaos`, toggled by `demo.sh` |

@@ -46,7 +46,8 @@ export type CaseRow = {
 
 const USE_CASES: Record<string, string> = {
   auth: "Authentication", login: "Authentication", signin: "Authentication", authz: "Access control", reg: "Registration", register: "Registration", signup: "Registration",
-  checkout: "Checkout", cart: "Cart", product: "Product catalog", products: "Product catalog", catalog: "Product catalog", orders: "Orders", order: "Orders",
+  checkout: "Checkout", cart: "Cart", basket: "Cart", product: "Product catalog", products: "Product catalog", catalog: "Product catalog", inventory: "Product catalog",
+  item: "Product catalog", orders: "Orders", order: "Orders",
   account: "Account", profile: "Account", home: "Landing", landing: "Landing", nav: "Navigation", search: "Search", coupon: "Checkout", billing: "Billing",
 };
 

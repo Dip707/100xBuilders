@@ -26,7 +26,7 @@ function Thinking() {
  * in the snapshot the assistant sees, and never in the stored transcript - which is why the
  * assistant asks for the account but cannot be the one to hold it.
  */
-function CredentialsRow({
+export function CredentialsRow({
   username, password, onChange,
 }: { username: string; password: string; onChange: (next: { username: string; password: string }) => void }) {
   return (

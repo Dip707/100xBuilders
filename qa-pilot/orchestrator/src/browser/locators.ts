@@ -15,12 +15,20 @@ async function count(locator: Locator): Promise<number> {
   }
 }
 
+/** A CSS attribute selector for the data-test attribute, which Playwright's getByTestId does not read. */
+const dataTest = (name: string) => `[data-test="${name.replace(/["\\]/g, "\\$&")}"]`;
+
 /**
  * Resolution chain: getByRole (loose name match, then exact name match) -> getByLabel -> getByText ->
- * getByTestId -> CSS. Each candidate is only accepted when it resolves to exactly one element
- * (or, for role-only / css targets, at least one - the first is then used). The loose lookup is
- * tried first since it is what generated test files should prefer to read; the exact lookup is
- * only used (with `exact: true` emitted in the code) when the loose lookup is itself ambiguous.
+ * getByTestId -> data-test attribute -> CSS -> the first of several role matches. Each candidate
+ * is only accepted when it resolves to exactly one element (or, for role-only / css targets, at
+ * least one - the first is then used). The loose lookup is tried first since it is what generated
+ * test files should prefer to read; the exact lookup is only used (with `exact: true` emitted in
+ * the code) when the loose lookup is itself ambiguous.
+ *
+ * A role and name that match several elements and nothing more specific is not a dead end: a
+ * product grid has one "Add to cart" per item, and a tester told to add a product presses the
+ * first one. That fallback comes last so a unique label, text or test id still wins.
  */
 export async function resolveLocator(page: Page, t: LocatorTarget): Promise<ResolvedLocator | null> {
   const candidates: (() => Promise<ResolvedLocator | null>)[] = [];
@@ -71,12 +79,33 @@ export async function resolveLocator(page: Page, t: LocatorTarget): Promise<Reso
     });
   }
 
+  if (t.name) {
+    const name = t.name;
+    candidates.push(async () => {
+      const l = page.locator(dataTest(name));
+      return (await count(l)) === 1
+        ? { locator: l, code: `page.locator(${q(dataTest(name))})`, strategy: "testid" }
+        : null;
+    });
+  }
+
   if (t.css) {
     const css = t.css;
     candidates.push(async () => {
       const l = page.locator(css);
       return (await count(l)) >= 1
         ? { locator: l.first(), code: `page.locator(${q(css)}).first()`, strategy: "css" }
+        : null;
+    });
+  }
+
+  if (t.role && t.name) {
+    const role = t.role as Parameters<Page["getByRole"]>[0];
+    const name = t.name;
+    candidates.push(async () => {
+      const loose = page.getByRole(role, { name });
+      return (await count(loose)) > 1
+        ? { locator: loose.first(), code: `page.getByRole(${q(t.role!)}, { name: ${q(name)} }).first()`, strategy: "role" }
         : null;
     });
   }

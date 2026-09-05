@@ -8,7 +8,8 @@ import { buildGraph } from "../src/graph.js";
 import { EventBus, getBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
 import { memoryStore } from "../src/store/memory.js";
-import { initialState, outputDir, type Flow } from "../src/state.js";
+import { initialState, outputDir, RunStateAnnotation, type Flow } from "../src/state.js";
+import { StateGraph, START, END } from "@langchain/langgraph";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
@@ -47,7 +48,10 @@ describe("full graph against mini-shop with the fake LLM", () => {
     const final = await done;
     await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ breakCoupon: false }) });
     const dir = process.env.QA_PILOT_OUTPUT + runId + "/";
-    for (const f of ["plan.md", "plan.json", "coverage.json", "results.json", "heal-log.json", "defects.json", "report.md", "report.html", "decisions.jsonl", "events.jsonl"]) expect(existsSync(dir + f), f).toBe(true);
+    for (const f of ["plan.md", "plan.json", "coverage.json", "results.json", "heal-log.json", "defects.json", "report.md", "report.html", "decisions.jsonl", "events.jsonl", "login-steps.json"]) expect(existsSync(dir + f), f).toBe(true);
+    const loginSteps = readFileSync(dir + "login-steps.json", "utf8");
+    expect(loginSteps).not.toContain("demo1234");
+    expect(loginSteps).toContain("{{password}}");
     expect(existsSync(dir + "tests/auth-002.spec.ts")).toBe(true);
     const passed = final.results!.tests.filter((t) => t.status === "passed").map((t) => t.id);
     expect(passed).toEqual(expect.arrayContaining(["auth-001", "auth-002", "auth-003", "orders-authz-001"]));
@@ -113,4 +117,42 @@ describe("plan review gate", () => {
     expect(after.filter((e) => e.type === "test_start").length).toBeGreaterThan(0);
     expect(final.results!.tests.every((t) => t.videoPath && existsSync(t.videoPath))).toBe(true);
   }, 300_000);
+});
+
+describe("concurrent node failures", () => {
+  it("keeps every reason when two fanned-out nodes fail in the same step", async () => {
+    // Generation fans out one node per flow, and each failure records why the run went partial.
+    // Two failures in one step therefore write that one channel twice, which used to abort the
+    // whole run with "LastValue can only receive one value per step" - losing the passing tests
+    // and the report with them. The channel has to fold concurrent writes, not reject them.
+    const graph = new StateGraph(RunStateAnnotation)
+      .addNode("fanOut", async () => ({}))
+      .addNode("a", async () => ({ partial: true, partialReason: "generate failed: goto timed out" }))
+      .addNode("b", async () => ({ partial: true, partialReason: "generate failed: screenshot timed out" }))
+      .addEdge(START, "fanOut")
+      .addEdge("fanOut", "a")
+      .addEdge("fanOut", "b")
+      .addEdge("a", END)
+      .addEdge("b", END)
+      .compile();
+    const final = await graph.invoke(initialState({ runId: "fanout-1", url: "http://example.test" }));
+    expect(final.partial).toBe(true);
+    expect(final.partialReason).toContain("goto timed out");
+    expect(final.partialReason).toContain("screenshot timed out");
+  });
+
+  it("does not repeat a reason two nodes happen to share", async () => {
+    const graph = new StateGraph(RunStateAnnotation)
+      .addNode("fanOut", async () => ({}))
+      .addNode("a", async () => ({ partial: true, partialReason: "generate failed: goto timed out" }))
+      .addNode("b", async () => ({ partial: true, partialReason: "generate failed: goto timed out" }))
+      .addEdge(START, "fanOut")
+      .addEdge("fanOut", "a")
+      .addEdge("fanOut", "b")
+      .addEdge("a", END)
+      .addEdge("b", END)
+      .compile();
+    const final = await graph.invoke(initialState({ runId: "fanout-2", url: "http://example.test" }));
+    expect(final.partialReason).toBe("generate failed: goto timed out");
+  });
 });

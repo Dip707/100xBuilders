@@ -3,17 +3,25 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve, relative, isAbsolute } from "node:path";
 import { z } from "zod";
 import { getBus } from "./events.js";
 import { getScreencast, type Frame } from "./browser/screencast.js";
-import { outputDir, RunInputSchema, type StartRunInput } from "./state.js";
-import { startRun, newRunId, submitReview, awaitingReview, rerunTest, rerunBlocker, ReviewSubmissionSchema } from "./run.js";
+import { outputDir, RunInputSchema, CredentialsSchema, type StartRunInput, type Step, type TestResult } from "./state.js";
+import {
+  startRun, newRunId, submitReview, awaitingReview, rerunTest, rerunBlocker, ReviewSubmissionSchema,
+  contextLoginSteps as liveLoginSteps, needsLogin, rerunTests as runRerunTests, specPath,
+} from "./run.js";
 import { defaultStore } from "./store/index.js";
-import type { ChatRecord, RunRecord, Store } from "./store/types.js";
+import type { ChatRecord, RerunPlanData, RunRecord, Store } from "./store/types.js";
 import { chatTurn, RunDraftSchema } from "./chat/turn.js";
+import { buildCatalogue } from "./copilot/catalogue.js";
+import { resolveRun, FINISHED } from "./copilot/resolve.js";
+import { copilotTurn, validateSelection, type CopilotDecision } from "./copilot/turn.js";
+import { planRerun, resultData, summariseRerun } from "./copilot/execute.js";
+import { hydrateLoginSteps, readRedactedLoginSteps } from "./copilot/login-steps.js";
 import { makeLlmClient, type LlmClient } from "./llm/client.js";
 import { authRoutes } from "./auth/routes.js";
 import { requireUser, type AuthEnv } from "./auth/middleware.js";
@@ -39,10 +47,40 @@ const ChatMessageSchema = z.object({
   snapshot: RunDraftSchema.optional(),
 });
 
+const CopilotScopeSchema = z.object({ url: z.string().optional(), runId: z.string().optional() });
+const CopilotMessageSchema = z.object({ text: z.string() });
+const CopilotExecuteSchema = z.object({ credentials: CredentialsSchema.optional() });
+
+/** Chats with an execute in flight. One rerun per chat at a time; a second request answers 409. */
+const executing = new Set<string>();
+
 /** What a chat is called until the first turn names it. */
 const UNTITLED_CHAT = "New chat";
 
 const MIME: Record<string, string> = { html: "text/html", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webm: "video/webm", zip: "application/zip", json: "application/json", md: "text/markdown", ts: "text/plain", jsonl: "text/plain" };
+
+/**
+ * Parses a single byte range against a known file size, per RFC 9110.
+ *
+ * Returns the resolved [start, end] pair (both inclusive), `null` when the header is absent
+ * or unparseable - which the spec says to ignore and answer in full - or "unsatisfiable"
+ * when it asks for bytes past the end of the file.
+ *
+ * Only a single range is honoured. Multi-range replies need a multipart/byteranges body,
+ * and no media element asks for one, so those fall back to the whole file.
+ */
+function parseRange(header: string | undefined, size: number): [number, number] | null | "unsatisfiable" {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header?.trim() ?? "");
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === "" && rawEnd === "") return null;
+  // "bytes=-N" is a suffix range: the last N bytes, not a range starting at zero.
+  const [start, end] = rawStart === ""
+    ? [Math.max(0, size - Number(rawEnd)), size - 1]
+    : [Number(rawStart), rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1)];
+  if (start > end || start >= size) return "unsatisfiable";
+  return [start, end];
+}
 
 /** How often a screencast connection flushes whatever frames have accumulated. */
 const FRAME_TICK_MS = 120;
@@ -64,6 +102,10 @@ export function createApi(opts: {
   rerunBlocker?: (runId: string, testId: string, store: Store) => Promise<string | null>;
   /** Injectable so the chat tests do not call Anthropic. */
   llm?: LlmClient;
+  /** Injectable so the copilot tests do not spawn Playwright. */
+  rerunTests?: (runId: string, testIds: string[], loginSteps: Step[], store: Store) => Promise<TestResult[]>;
+  /** Injectable so the copilot tests can pretend a run's login is, or is not, still in memory. */
+  contextLoginSteps?: (runId: string) => Step[] | null;
 }) {
   const app = new Hono<AuthEnv>();
   const { store } = opts;
@@ -101,6 +143,7 @@ export function createApi(opts: {
   app.use("/report/*", requireUser(store));
   app.use("/chats", requireUser(store));
   app.use("/chats/*", requireUser(store));
+  app.use("/copilot/*", requireUser(store));
 
   // Built on first use rather than at boot: the Anthropic constructor needs a key, and the
   // API has to come up for /health and /auth on a machine that has none configured.
@@ -127,6 +170,12 @@ export function createApi(opts: {
     return rec && rec.userId === userId ? rec : null;
   }
 
+  /** A copilot chat the caller owns. An intake chat is not served through the copilot routes. */
+  async function ownedCopilotChat(chatId: string, userId: string): Promise<ChatRecord | null> {
+    const chat = await ownedChat(chatId, userId);
+    return chat && chat.kind === "copilot" ? chat : null;
+  }
+
   app.post("/run", async (c) => {
     const parsed = BodySchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
@@ -142,7 +191,7 @@ export function createApi(opts: {
   app.post("/chats", async (c) => {
     const now = new Date().toISOString();
     const chat: ChatRecord = {
-      id: randomUUID(), userId: c.get("user").id, title: UNTITLED_CHAT,
+      id: randomUUID(), userId: c.get("user").id, kind: "intake", title: UNTITLED_CHAT,
       createdAt: now, updatedAt: now, messages: [], draft: {},
     };
     await store.insertChat(chat);
@@ -150,7 +199,7 @@ export function createApi(opts: {
   });
 
   app.get("/chats", async (c) => {
-    return c.json({ chats: await store.listChats(c.get("user").id) });
+    return c.json({ chats: await store.listChats(c.get("user").id, { kind: "intake" }) });
   });
 
   app.get("/chats/:chatId", async (c) => {
@@ -202,6 +251,149 @@ export function createApi(opts: {
     return c.json({ reply: turn.reply, patch: turn.patch, needs: turn.needs, draft, ...(title ? { title } : {}) });
   });
 
+  // ---------- Copilot ----------
+  //
+  // A chat that acts on finished runs. A turn is two calls: the decision, which resolves the
+  // run, catalogues its tests and asks the model what to do, and the execution, which runs
+  // the pending selection. Splitting them lets the person see what is about to run, and
+  // lets credentials travel only with the execute request when a rerun needs to sign in.
+
+  app.post("/copilot/chats", async (c) => {
+    const parsed = CopilotScopeSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const userId = c.get("user").id;
+    const scope: { url?: string; runId?: string } = {};
+    if (parsed.data.runId) {
+      // A scope naming a run the caller cannot see is refused up front, so the chat never
+      // exists with a foreign run in it.
+      const run = await ownedRun(parsed.data.runId, userId);
+      if (!run) return c.json({ error: "not found" }, 404);
+      scope.runId = run.id;
+      scope.url = run.url;
+    }
+    if (parsed.data.url) scope.url = parsed.data.url;
+    const now = new Date().toISOString();
+    const chat: ChatRecord = {
+      id: randomUUID(), userId, kind: "copilot", title: UNTITLED_CHAT,
+      createdAt: now, updatedAt: now, messages: [], draft: {}, scope,
+    };
+    await store.insertChat(chat);
+    return c.json({ chat });
+  });
+
+  app.get("/copilot/chats", async (c) => {
+    return c.json({ chats: await store.listChats(c.get("user").id, { kind: "copilot" }) });
+  });
+
+  app.post("/copilot/chats/:chatId/messages", async (c) => {
+    const chatId = c.req.param("chatId");
+    const userId = c.get("user").id;
+    const chat = await ownedCopilotChat(chatId, userId);
+    if (!chat) return c.json({ error: "not found" }, 404);
+
+    const parsed = CopilotMessageSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const text = parsed.data.text.trim();
+    if (!text) return c.json({ error: "a message cannot be empty" }, 400);
+
+    const at = new Date().toISOString();
+    const userMessage = { role: "user" as const, text, at };
+    const needsTitle = chat.title === UNTITLED_CHAT;
+
+    const run = await resolveRun(store, userId, chat.scope ?? {}, text);
+    if (!run) {
+      // Written here rather than by the model: there is nothing to show the model yet.
+      const reply = "There is no finished run to work from yet. Give me a run id, or the URL of the app you tested.";
+      const title = needsTitle ? text.slice(0, 40) : undefined;
+      await store.appendChatTurn(chatId, [userMessage, { role: "assistant", text: reply, at: new Date().toISOString() }], title ? { title } : {});
+      return c.json({ reply, action: "clarify", needs: [], ...(title ? { title } : {}) });
+    }
+
+    const catalogue = buildCatalogue(run);
+    let decision: CopilotDecision;
+    try {
+      decision = validateSelection(await copilotTurn(getLlm(), { catalogue, messages: chat.messages.concat(userMessage), needsTitle }), catalogue);
+    } catch (err) {
+      // Nothing is stored on a failed turn: a half-written exchange would leave the
+      // transcript claiming the assistant was asked something it never answered.
+      console.error("[copilot] turn failed:", err);
+      return c.json({ error: "the copilot could not answer that - try again" }, 502);
+    }
+
+    const title = needsTitle ? decision.title : undefined;
+    const scope = { url: run.url, runId: run.id };
+    let plan: RerunPlanData | undefined;
+    let needs: "credentials"[] = [];
+
+    if (decision.action === "rerun") {
+      const hasContext = (opts.contextLoginSteps ?? liveLoginSteps)(run.id) !== null;
+      const hasLoginFile = readRedactedLoginSteps(run.id) !== null;
+      const split = planRerun(decision.testIds, catalogue, { hasContext, hasLoginFile });
+      if (split.runnable.length === 0) {
+        decision = {
+          ...decision, action: "clarify", testIds: [],
+          reply: `None of those can run: ${split.blocked.map((b) => `${b.id} ${b.reason}`).join("; ")}.`,
+        };
+      } else {
+        plan = { kind: "rerun_plan", runId: run.id, testIds: split.runnable, blocked: split.blocked };
+        if (split.needsCredentials) needs = ["credentials"];
+      }
+    }
+
+    const assistant = { role: "assistant" as const, text: decision.reply, at: new Date().toISOString(), ...(plan ? { data: plan } : {}) };
+    await store.appendChatTurn(chatId, [userMessage, assistant], {
+      scope,
+      ...(title ? { title } : {}),
+      ...(plan ? { pending: { runId: plan.runId, testIds: plan.testIds } } : {}),
+    });
+    return c.json({ reply: decision.reply, action: decision.action, runId: run.id, ...(plan ? { plan } : {}), needs, ...(title ? { title } : {}) });
+  });
+
+  app.post("/copilot/chats/:chatId/execute", async (c) => {
+    const chatId = c.req.param("chatId");
+    const userId = c.get("user").id;
+    const chat = await ownedCopilotChat(chatId, userId);
+    if (!chat) return c.json({ error: "not found" }, 404);
+    const parsed = CopilotExecuteSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    if (!chat.pending) return c.json({ error: "nothing to run - ask for a rerun first" }, 409);
+
+    // The check and the claim happen with no await between them, so two requests that both
+    // passed the ownership check cannot both proceed. Every path out of here releases the slot.
+    if (executing.has(chatId)) return c.json({ error: "a rerun is already in progress for this chat" }, 409);
+    executing.add(chatId);
+    try {
+      const { runId, testIds } = chat.pending;
+      const run = await ownedRun(runId, userId);
+      if (!run) return c.json({ error: "not found" }, 404);
+      if (!FINISHED.has(run.status)) return c.json({ error: "the run is still in progress" }, 409);
+
+      let loginSteps = (opts.contextLoginSteps ?? liveLoginSteps)(runId);
+      if (loginSteps === null) {
+        // A spec that vanished between the plan and now is skipped by the runner; it must not
+        // throw here.
+        const signsIn = testIds.some((id) => existsSync(specPath(runId, id)) && needsLogin(specPath(runId, id)));
+        if (!signsIn) loginSteps = [];
+        else {
+          const redacted = readRedactedLoginSteps(runId);
+          if (!redacted || !parsed.data.credentials) {
+            return c.json({ error: "these tests sign in; enter the target app's username and password to run them", needs: ["credentials"] }, 409);
+          }
+          // The credentials live in this handler for the length of the call and nowhere else.
+          loginSteps = hydrateLoginSteps(redacted, parsed.data.credentials);
+        }
+      }
+
+      const results = await (opts.rerunTests ?? runRerunTests)(runId, testIds, loginSteps, store);
+      const reply = summariseRerun(results, testIds);
+      const result = resultData(runId, results);
+      await store.appendChatTurn(chatId, [{ role: "assistant", text: reply, at: new Date().toISOString(), data: result }], { pending: null });
+      return c.json({ reply, result });
+    } finally {
+      executing.delete(chatId);
+    }
+  });
+
   app.get("/runs", async (c) => {
     return c.json({ runs: await store.listRuns(c.get("user").id) });
   });
@@ -242,9 +434,15 @@ export function createApi(opts: {
     return c.json({ result });
   });
 
+  /**
+   * The run's event stream: the whole history so far, then whatever follows. The stream
+   * closes once the run is done, unless `?follow=1` asks it to stay open - a rerun of a
+   * finished run's tests emits on the same bus after `done`, and the copilot watches those.
+   */
   app.get("/events/:runId", async (c) => {
     const runId = c.req.param("runId");
     if (!(await ownedRun(runId, c.get("user").id))) return c.json({ error: "not found" }, 404);
+    const follow = c.req.query("follow") === "1";
     const bus = getBus(runId);
     return streamSSE(c, async (stream) => {
       let id = 0;
@@ -253,11 +451,11 @@ export function createApi(opts: {
         await stream.writeSSE({ event: e.type, data: JSON.stringify(e), id: String(id++) });
         if (e.type === "done") finished = true;
       }
-      if (finished) return;
+      if (finished && !follow) return;
       await new Promise<void>((resolveStream) => {
         const unsub = bus.subscribe((e) => {
           stream.writeSSE({ event: e.type, data: JSON.stringify(e), id: String(id++) }).catch(() => { unsub(); resolveStream(); });
-          if (e.type === "done") { unsub(); resolveStream(); }
+          if (e.type === "done" && !follow) { unsub(); resolveStream(); }
         });
         stream.onAbort(() => { unsub(); resolveStream(); });
       });
@@ -362,7 +560,30 @@ export function createApi(opts: {
     // else - live frames, plan.json, results.json, generated specs - is rewritten while
     // the run progresses and a cached copy would show the UI a stale plan.
     const cache = relPath.startsWith("traces/") ? "private, max-age=3600" : "no-store";
-    return c.body(new Uint8Array(readFileSync(path)), 200, { "content-type": MIME[ext] ?? "application/octet-stream", "cache-control": cache });
+    const headers = {
+      "content-type": MIME[ext] ?? "application/octet-stream",
+      "cache-control": cache,
+      // A media element only treats a resource as seekable if the server advertises byte
+      // ranges. Without this the recordings play from the start and cannot be scrubbed,
+      // and the poster frame is pinned to frame zero.
+      "accept-ranges": "bytes",
+    };
+
+    const size = statSync(path).size;
+    const range = parseRange(c.req.header("range"), size);
+    if (range === "unsatisfiable") {
+      return c.body(null, 416, { ...headers, "content-range": `bytes */${size}` });
+    }
+    const body = readFileSync(path);
+    if (!range) {
+      return c.body(new Uint8Array(body), 200, { ...headers, "content-length": String(size) });
+    }
+    const [start, end] = range;
+    return c.body(new Uint8Array(body.subarray(start, end + 1)), 206, {
+      ...headers,
+      "content-range": `bytes ${start}-${end}/${size}`,
+      "content-length": String(end - start + 1),
+    });
   });
 
   return app;

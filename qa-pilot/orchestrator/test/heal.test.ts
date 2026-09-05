@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
 import { crawl } from "../src/nodes/explore.js";
-import { healNode, patchStep, guardExpects } from "../src/nodes/heal.js";
+import { afterHeal, healNode, patchStep, guardExpects } from "../src/nodes/heal.js";
 import { BrowserToolkit } from "../src/browser/toolkit.js";
 import { initialState, type Classification, type Flow, type HealRecord, type SiteMap, type TestResult } from "../src/state.js";
 import { EventBus } from "../src/events.js";
@@ -132,6 +132,27 @@ describe("healNode", () => {
     expect(events.some((e) => e.type === "error" && e.node === "heal")).toBe(true);
     expect(existsSync(process.env.QA_PILOT_OUTPUT + "r/heal-log.json")).toBe(true);
   }, 120_000);
+});
+
+describe("healNode carries the classifier's reruns forward", () => {
+  it("hands a test marked for rerun to the run node even when nothing was healed", async () => {
+    // The classifier can mark some tests "heal" and others "rerun" in the same pass. The graph
+    // visits the healer first, and it used to route straight to the report when no heal took,
+    // so a navigation timeout that only needed a second try was reported as a failure.
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-heal-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const llm = new FakeLlmClient({});
+    const state = {
+      ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow],
+      results: { tests: [], at: "" },
+      classifications: [{ test: "checkout-002", class: "env" as const, confidence: 0.65, evidence: ["environment error: page.goto: Timeout"], action: "rerun" as const }],
+    };
+    const update = await healNode(state, { bus, llm, headless: true });
+    expect(update.testsToRun).toEqual(["checkout-002"]);
+    expect(update.rerunAttempts).toEqual({ "checkout-002": 1 });
+    expect(afterHeal({ ...state, ...update } as never, { bus, llm })).toBe("run");
+  });
 });
 
 describe("guardExpects on assertion targets", () => {

@@ -6,7 +6,7 @@ export default defineConfig({
   fullyParallel: true,
   workers: Number(process.env.QA_PILOT_WORKERS ?? 4),
   retries: 0,
-  timeout: 30_000,
+  timeout: 60_000,
   expect: { timeout: 5_000 },
   reporter: [["json", { outputFile: process.env.QA_PILOT_JSON_REPORT ?? "./results.json" }]],
   use: {
@@ -15,7 +15,9 @@ export default defineConfig({
     // reported as timedOut with no error location: no failing step for the classifier, no
     // locator for the healer. A bounded action timeout turns it into a locator error instead.
     actionTimeout: 10_000,
-    navigationTimeout: 15_000,
+    // A public target on a real network routinely needs more than 15 seconds for a page
+    // under parallel load; that used to fail half a run as "environment" for nothing.
+    navigationTimeout: 30_000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     // Every test is recorded so the UI can replay it; the run node copies the file out

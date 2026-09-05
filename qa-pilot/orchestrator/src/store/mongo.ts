@@ -1,28 +1,90 @@
-import { MongoClient, type Collection, type Db } from "mongodb";
+import { MongoClient, type Collection, type Db, type Filter } from "mongodb";
 import { randomUUID } from "node:crypto";
 import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type RunRecord, type Store, type User } from "./types.js";
 
 type UserDoc = { _id: string; email: string; passwordHash: string; createdAt: string };
 type SessionDoc = { _id: string; userId: string; createdAt: string; expiresAt: Date };
 type RunDoc = Omit<RunRecord, "id"> & { _id: string };
-type ChatDoc = Omit<ChatRecord, "id"> & { _id: string };
+type ChatDoc = Omit<ChatRecord, "id" | "kind"> & { _id: string; kind?: ChatRecord["kind"] };
 
 const DUPLICATE_KEY = 11000;
 /** Case-insensitive comparison for the unique email index and for lookups. */
 const CI = { locale: "en", strength: 2 } as const;
 
 /**
+ * How long one connect attempt waits for the cluster to answer. The previous 8s was chosen
+ * to fail fast on a wrong URL or a stale Atlas IP allowlist, but it was below the cluster's
+ * real cold-connect latency: measured against the project's M0 shared-tier cluster, cold
+ * connects ranged from 2.2s to 25s and one attempt in six exceeded 8s outright. A boot that
+ * loses that race takes the whole API down, because the store is built before serve() runs.
+ * Misconfiguration still fails fast - it is rejected by isTransientConnectError, not by the
+ * clock - so the wider budget costs nothing on a genuinely bad URL or credential.
+ */
+export const SERVER_SELECTION_TIMEOUT_MS = Number(process.env.QA_PILOT_MONGO_TIMEOUT_MS ?? 30_000);
+export const CONNECT_ATTEMPTS = Number(process.env.QA_PILOT_MONGO_ATTEMPTS ?? 3);
+const RETRY_DELAY_MS = 1000;
+
+/** Auth is rejected during the handshake, so Atlas surfaces a wrong password as a selection
+ *  failure whose nested per-server error is the auth rejection rather than as a bare
+ *  MongoServerError. Both shapes have to be read to keep a bad credential from being retried. */
+function mentionsAuthFailure(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  const walk = (v: unknown, depth: number): boolean => {
+    if (depth > 4 || v == null || typeof v !== "object" || seen.has(v)) return false;
+    seen.add(v);
+    const o = v as { message?: unknown; codeName?: unknown; servers?: unknown; error?: unknown; reason?: unknown; cause?: unknown };
+    if (typeof o.message === "string" && /auth(?:entication)? fail|bad auth|not authorized/i.test(o.message)) return true;
+    if (o.codeName === "AuthenticationFailed" || o.codeName === "Unauthorized") return true;
+    const servers = o.servers instanceof Map ? [...o.servers.values()] : [];
+    return [...servers, o.error, o.reason, o.cause].some((child) => walk(child, depth + 1));
+  };
+  return walk(err, 0);
+}
+
+/**
+ * A transient failure is one where the cluster simply did not answer in time or the
+ * connection was reset mid-handshake - retrying those is what keeps a slow shared-tier
+ * cluster from killing boot. A malformed URL, a bad credential or a bad argument is
+ * permanent: retrying only delays the same failure by the whole budget, so it fails fast.
+ */
+export function isTransientConnectError(err: unknown): boolean {
+  if (mentionsAuthFailure(err)) return false;
+  const name = (err as { name?: string } | null)?.name;
+  return name === "MongoServerSelectionError" || name === "MongoNetworkError" || name === "MongoNetworkTimeoutError";
+}
+
+/** Bounded retry around a single connect, so one slow answer does not take the API down. */
+export async function connectWithRetry(
+  connect: () => Promise<MongoClient>,
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<MongoClient> {
+  const attempts = Math.max(1, opts.attempts ?? CONNECT_ATTEMPTS);
+  const delayMs = opts.delayMs ?? RETRY_DELAY_MS;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await connect();
+    } catch (err) {
+      if (attempt >= attempts || !isTransientConnectError(err)) throw err;
+      console.warn(
+        `mongo: connect attempt ${attempt}/${attempts} failed (${(err as Error).message}); retrying in ${delayMs}ms`,
+      );
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
+/**
  * One client per url+db, memoised so the driver's connection pool is reused across
- * requests instead of being rebuilt per call. serverSelectionTimeoutMS is set low enough
- * that a wrong URL or an Atlas IP allowlist that has not been updated fails at boot with
- * a readable error rather than hanging the API for the driver's 30s default.
+ * requests instead of being rebuilt per call.
  */
 const clients = new Map<string, Promise<MongoClient>>();
 
 function client(url: string): Promise<MongoClient> {
   let existing = clients.get(url);
   if (!existing) {
-    existing = new MongoClient(url, { serverSelectionTimeoutMS: 8000 }).connect();
+    existing = connectWithRetry(() =>
+      new MongoClient(url, { serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS }).connect(),
+    );
     clients.set(url, existing);
     existing.catch(() => clients.delete(url));
   }
@@ -126,19 +188,24 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
       const doc = await chats.findOne({ _id: id });
       if (!doc) return null;
       const { _id, ...rest } = doc;
-      return { id: _id, ...rest };
+      return { id: _id, ...rest, kind: rest.kind ?? "intake" };
     },
-    async listChats(userId, limit = 50) {
-      // draft is projected in only for its url, which the dropdown shows under the title;
-      // the transcript never leaves the database for a list request.
+    async listChats(userId, opts = {}) {
+      // A document written before `kind` existed has none and is an intake chat.
+      const kind: Filter<ChatDoc> = opts.kind === "intake"
+        ? { $or: [{ kind: "intake" }, { kind: { $exists: false } }] }
+        : opts.kind ? { kind: opts.kind } : {};
+      // draft and scope are projected in only for their url, which the dropdown shows under
+      // the title; the transcript never leaves the database for a list request.
       const docs = await chats
-        .find({ userId }, { projection: { messages: 0 } })
+        .find({ userId, ...kind }, { projection: { messages: 0, pending: 0 } })
         .sort({ updatedAt: -1 })
-        .limit(limit)
+        .limit(opts.limit ?? 50)
         .toArray();
       return docs.map(({ _id, draft, ...rest }) => {
-        const s: ChatSummary = { id: _id, ...(rest as Omit<ChatSummary, "id">) };
-        if (draft?.url) s.url = draft.url;
+        const s: ChatSummary = { id: _id, ...(rest as Omit<ChatSummary, "id">), kind: rest.kind ?? "intake" };
+        const url = s.kind === "copilot" ? rest.scope?.url : draft?.url;
+        if (url) s.url = url;
         return s;
       });
     },
@@ -147,10 +214,13 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
       if (patch.draft) set.draft = patch.draft;
       if (patch.title) set.title = patch.title;
       if (patch.runId) set.runId = patch.runId;
+      if (patch.scope) set.scope = patch.scope;
+      if (patch.pending) set.pending = patch.pending;
       // $each with $slice: -CAP keeps the newest CAP messages in the same write that appends,
       // so the cap is enforced by the database rather than by a read-modify-write race.
       await chats.updateOne({ _id: id }, {
         $set: set,
+        ...(patch.pending === null ? { $unset: { pending: "" } } : {}),
         ...(messages.length > 0 ? { $push: { messages: { $each: messages, $slice: -CHAT_MESSAGE_CAP } } } : {}),
       });
     },

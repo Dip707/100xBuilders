@@ -67,6 +67,15 @@ The **Review** card on the start form pauses the run after the coverage gate.
 The proposed tests appear in a review sheet where each can be renamed, re-prioritised or deselected; nothing is generated until *Run all* is confirmed.
 It is off by default so a run stays fully autonomous.
 
+## The copilot
+
+**Copilot** (`/copilot`) is a chat that acts on finished runs.
+Type "rerun the tests that failed last time, especially the checkout ones" and it resolves the run you mean, checks that those tests exist, reruns them and reports the outcome in the chat, with each test's status moving live while it runs.
+Ask "why did the coupon test fail?" and it answers from the run's results, the classifier's verdict and the defect ticket.
+Every chat is saved under a title taken from the first request, so the dropdown reads like a list of things you asked for.
+A run's login is never stored, so after the API restarts a rerun of signed-in tests asks for the target app's account in masked inputs; the values travel only with that request.
+*Ask copilot* on a run header opens a chat scoped to that run.
+
 ## Demo script (5 minutes)
 
 1. Start the three services and open the UI.

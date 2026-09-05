@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Icon, Spinner, StatusPill, Tabs } from "@/components/ui";
 import { PriorityTag } from "@/components/cases/PriorityTag";
 import { LivePreview } from "./LivePreview";
+import { RecordingPlayer } from "./RecordingPlayer";
 import { CodeView } from "./CodeView";
 import { fileUrl, rerunTest } from "@/lib/api";
 import { useRun } from "@/lib/run-context";
@@ -85,27 +86,7 @@ function Preview({ row, runId, rerunning, events }: { row: CaseRow; runId: strin
   const live = rerunning || row.status === "running";
   const video = artifactRel((row.result as TestResultData | undefined)?.videoPath, runId);
   if (live) return <LivePreview runId={runId} relPath={liveFramePath(row.id)} active fps={4} />;
-  if (video) {
-    return (
-      <div className="overflow-hidden rounded-box border border-line bg-console">
-        <video
-          key={video} controls preload="metadata" src={fileUrl(runId, video)}
-          /*
-           * Playwright starts recording before the first paint, so frame zero is the
-           * browser's blank white page - which is what every thumbnail was showing.
-           * Seeking a little way in once the metadata lands gives the poster an actual
-           * frame of the run. Capped so a long recording still opens on something early.
-           */
-          onLoadedMetadata={(e) => {
-            const v = e.currentTarget;
-            if (Number.isFinite(v.duration) && v.duration > 0) v.currentTime = Math.min(v.duration * 0.35, 2);
-          }}
-          className="aspect-[16/10] w-full bg-console object-contain"
-          aria-label={`Recording of ${row.flow.title}`}
-        />
-      </div>
-    );
-  }
+  if (video) return <RecordingPlayer key={video} src={fileUrl(runId, video)} label={row.flow.title} />;
   const shot = latestScreenshotBy(events, runId, `generator:${row.id}`) ?? latestScreenshotBy(events, runId, `healer`);
   if (shot) {
     return (

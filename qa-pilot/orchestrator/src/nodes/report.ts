@@ -3,6 +3,7 @@ import type { RunState, RunUpdate } from "../state.js";
 import { writeOutput } from "../output.js";
 import { writeSuite } from "../suite/bundle.js";
 import type { NodeDeps } from "./deps.js";
+import { writeRedactedLoginSteps } from "../copilot/login-steps.js";
 
 // Escapes untrusted text before it is interpolated into markdown that will
 // later be rendered to HTML by `marked` (which passes inline HTML through).
@@ -78,6 +79,8 @@ export async function reportNode(state: RunState, deps: NodeDeps): Promise<RunUp
   writeOutput(state.runId, "report.md", md);
   writeOutput(state.runId, "report.html", `<!doctype html><meta charset="utf-8"><title>qa-pilot report</title><style>${CSS}</style>${await marked.parse(md)}`);
   writeOutput(state.runId, "defects.json", state.defects);
+  // What a later copilot rerun needs to sign in again, with the credential values redacted.
+  writeRedactedLoginSteps(state.runId, state.siteMap?.loginSteps ?? [], state.credentials);
   // The suite an engineer takes away. Never allowed to cost the run its report, so a failure
   // here is reported and swallowed.
   try {

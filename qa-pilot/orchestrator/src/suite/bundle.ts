@@ -60,7 +60,7 @@ export function renderFixtures(loginSteps: Step[], credentials: Credentials | un
     ``,
     `async function runStep(page: Page, s: Step): Promise<void> {`,
     `  if (s.action === "goto") {`,
-    `    await page.goto(s.target ?? "/");`,
+    `    await page.goto(s.target ?? "/", { waitUntil: "domcontentloaded" });`,
     `    return;`,
     `  }`,
     `  const loc = page.getByRole(s.role as never, { name: s.name });`,
@@ -123,7 +123,7 @@ export default defineConfig({
   fullyParallel: true,
   workers: Number(process.env.WORKERS ?? 4),
   retries: Number(process.env.RETRIES ?? 0),
-  timeout: 30_000,
+  timeout: 60_000,
   expect: { timeout: 5_000 },
   reporter: [["html", { open: "never" }], ["line"]],
   use: {
@@ -131,7 +131,9 @@ export default defineConfig({
     // A bounded action timeout turns a missing element into a locator error naming the step,
     // instead of letting the whole test run out its timeout with nothing to show for it.
     actionTimeout: 10_000,
-    navigationTimeout: 15_000,
+    // A public target on a real network routinely needs more than 15 seconds for a page
+    // under parallel load; that used to fail half a run as "environment" for nothing.
+    navigationTimeout: 30_000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",

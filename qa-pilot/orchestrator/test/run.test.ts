@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
 import { runPlaywright, parseJsonReport } from "../src/nodes/run.js";
 import { EventBus } from "../src/events.js";
+import { memoryStore } from "../src/store/memory.js";
+import { contextLoginSteps, rerunTests } from "../src/run.js";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
@@ -174,4 +176,40 @@ describe("runPlaywright on a missing step target", () => {
     expect(t.error).toMatch(/Teleport/);
     expect(Date.now() - started).toBeLessThan(25_000);
   }, 120_000);
+});
+
+describe("rerunTests", () => {
+  it("runs several specs in one invocation and merges every result into results.json", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-rerun-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "r/tests/auth-002.spec.ts", passing);
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "r/tests/checkout-001.spec.ts", failing);
+    // A stale earlier result for one test and none for the other: the merge must replace the
+    // first and add the second.
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "r/results.json", JSON.stringify({ tests: [{ id: "auth-002", file: "x", title: "old", status: "failed", network: [], consoleErrors: [], pageErrors: [], durationMs: 1 }], at: "then" }));
+    const store = memoryStore();
+    await store.insertRun({ id: "r", userId: "u1", url: shop.base, hasPrd: false, status: "done", startedAt: new Date().toISOString() });
+    const loginSteps = [
+      { action: "goto" as const, target: "/login" },
+      { action: "fill" as const, role: "textbox", name: "Email", value: "demo@shop.test" },
+      { action: "fill" as const, role: "textbox", name: "Password", value: "demo1234" },
+      { action: "click" as const, role: "button", name: "Sign in" },
+    ];
+    await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ breakCoupon: true }) });
+    try {
+      const results = await rerunTests("r", ["auth-002", "checkout-001", "ghost-9"], loginSteps, store);
+      expect(results.map((r) => [r.id, r.status]).sort()).toEqual([["auth-002", "passed"], ["checkout-001", "failed"]]);
+    } finally {
+      await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ breakCoupon: false }) });
+    }
+    const merged = JSON.parse(readFileSync(process.env.QA_PILOT_OUTPUT + "r/results.json", "utf8"));
+    expect(merged.tests.map((t: { id: string; status: string }) => [t.id, t.status]).sort()).toEqual([["auth-002", "passed"], ["checkout-001", "failed"]]);
+    const rec = await store.getRun("r");
+    expect(rec!.testsPassed).toBe(1);
+    expect(rec!.testsFailed).toBe(1);
+  }, 120_000);
+
+  it("contextLoginSteps is null for a run this process never finished", () => {
+    expect(contextLoginSteps("never-ran-here")).toBeNull();
+  });
 });

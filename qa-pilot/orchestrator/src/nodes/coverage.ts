@@ -11,8 +11,18 @@ export const MAX_PLAN_ITERATIONS = 3;
 
 type Gap = CoverageVerdict["gaps"][number];
 
-const touches = (f: Flow, path: string) => f.steps.some((s) => s.action === "goto" && s.target === path) || f.title.toLowerCase().includes(path.replace(/^\//, "").toLowerCase());
-const isEmptySubmit = (f: Flow) => /empty|blank|required|without|no input|missing/i.test(f.title);
+/** Whether a flow exercises a route: it navigates there, the dry walk saw it there, or its title names it. */
+const touches = (f: Flow, path: string) =>
+  f.steps.some((s) => s.action === "goto" && s.target === path) ||
+  (f.visits ?? []).includes(path) ||
+  f.title.toLowerCase().includes(path.replace(/^\//, "").toLowerCase());
+
+/** Words an intent is made of that never name an area of the app. */
+const INTENT_FILLER = new Set(["focus", "with", "and", "the", "on", "cover", "covering", "just", "only", "not", "end", "ends", "test", "tests", "testing", "flow", "flows", "also", "then", "that", "this", "from", "into", "please", "make", "sure", "every", "each", "well", "more", "than", "rather", "especially", "particularly", "mainly", "mostly", "should", "must", "need", "needs", "check", "checks", "verify", "whole", "entire", "full", "fully", "properly", "along", "through", "beyond", "including", "include", "plus"]);
+/** An empty-submit flow says so in its title, as the planner prompt requires. "Missing" and
+ *  "required" are not enough: "rejects checkout when the postal code is missing" leaves one
+ *  field out and is the form's negative case, not its empty case. */
+const isEmptySubmit = (f: Flow) => /\bempty\b|\bblank\b|no input|without (any |entering |filling )?(input|data|values|fields)|nothing (entered|filled|typed)/i.test(f.title);
 
 export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: string; prdRequirements?: string[]; prdMatrix?: Record<string, string[]> }): CoverageVerdict {
   const gaps: Gap[] = [];
@@ -34,7 +44,7 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
       pass += [happy, negative, empty].filter(Boolean).length / 3;
     }
     checks.forms = pass / forms.length;
-    weights.forms = 0.3;
+    weights.forms = 0.2;
   }
 
   // 2. gated routes have an authz flow
@@ -47,7 +57,7 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
       else gaps.push({ kind: "missing_authz", target: p.path, suggest: `visit ${p.path} logged out and expect redirect to ${siteMap.loginPath ?? "login"}` });
     }
     checks.authz = pass / gated.length;
-    weights.authz = 0.2;
+    weights.authz = 0.15;
   }
 
   // 3. PRD requirements
@@ -64,7 +74,7 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
 
   // 4. intent keywords
   if (opts.intent) {
-    const words = opts.intent.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3 && !["focus", "with", "and", "the", "on"].includes(w));
+    const words = [...new Set(opts.intent.toLowerCase().split(/[^a-z0-9]+/))].filter((w) => w.length > 3 && !INTENT_FILLER.has(w));
     if (words.length) {
       const hit = words.filter((w) => flows.some((f) => f.title.toLowerCase().includes(w)));
       checks.intent = hit.length / words.length;
@@ -73,21 +83,39 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
     }
   }
 
-  // 5. category mix
+  // 5. every route worth testing has at least one flow that visits it. Without this a
+  // login-walled app scores full marks on its one login form while the whole application
+  // behind the wall - catalog, cart, checkout - goes unplanned. An authz flow does not count:
+  // it only proves the route is walled off, it never exercises what is on it.
+  const routes = Object.values(siteMap.pages).filter((p) => p.forms.length || p.buttons.length);
+  const untested = routes.filter((p) => !flows.some((f) => f.category !== "authz" && touches(f, p.path)));
+  if (routes.length) {
+    for (const p of untested) {
+      gaps.push({ kind: "missing_route_flow", target: p.path, suggest: `no flow exercises ${p.path}; add one that uses ${p.forms.length ? "its form" : `its controls (${p.buttons.slice(0, 3).map((b) => `"${b.name}"`).join(", ")})`}` });
+    }
+    checks.routes = (routes.length - untested.length) / routes.length;
+    weights.routes = 0.4;
+  }
+
+  // 6. category mix
   const nonHappy = flows.filter((f) => ["negative", "edge", "error_state"].includes(f.category)).length;
   const mix = flows.length ? nonHappy / flows.length : 0;
   checks.mix = Math.min(1, mix / 0.4);
-  weights.mix = 0.2;
+  weights.mix = 0.15;
   if (mix < 0.4) gaps.push({ kind: "category_mix", suggest: `only ${(mix * 100).toFixed(0)}% of flows are negative/edge/error_state; add more` });
 
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
   const score = Object.entries(checks).reduce((acc, [k, v]) => acc + v * weights[k], 0) / totalWeight;
 
-  const untested_risk = Object.values(siteMap.pages)
-    .filter((p) => p.forms.length && !flows.some((f) => touches(f, p.path)))
-    .map((p) => ({ flow: p.path, reason: "form discovered but no flow touches it", risk: "medium" as const }));
+  const untested_risk = untested.map((p) => ({
+    flow: p.path,
+    reason: p.forms.length ? "form discovered but no flow exercises it" : "interactive page discovered but no flow exercises it",
+    risk: "medium" as const,
+  }));
 
-  return { score: Math.round(score * 100) / 100, gaps, untested_risk, checks, prdRequirements: opts.prdRequirements ?? [], prdMatrix: opts.prdMatrix ?? {} };
+  // Kept at full precision: this is the number the gate compares, and rounding 0.748 up to
+  // 0.75 used to wave a half-covered plan through. The UI rounds it for display.
+  return { score, gaps, untested_risk, checks, prdRequirements: opts.prdRequirements ?? [], prdMatrix: opts.prdMatrix ?? {} };
 }
 
 export async function coverageNode(state: RunState, deps: NodeDeps): Promise<RunUpdate> {

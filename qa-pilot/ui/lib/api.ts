@@ -28,7 +28,22 @@ export type NewRunInput = {
   chatId?: string;
 };
 
-export type ChatMessage = { role: "user" | "assistant"; text: string; at: string };
+export type ChatKind = "intake" | "copilot";
+
+/** A rerun the copilot decided on: what will run, and what cannot and why. */
+export type RerunPlanData = { kind: "rerun_plan"; runId: string; testIds: string[]; blocked: { id: string; reason: string }[] };
+/** The outcome of an executed rerun, stored on the message so a reopened chat shows it. */
+export type RerunResultData = {
+  kind: "rerun_result";
+  runId: string;
+  results: { id: string; title: string; status: string; error?: string; durationMs?: number }[];
+};
+export type ChatMessageData = RerunPlanData | RerunResultData;
+
+export type ChatMessage = { role: "user" | "assistant"; text: string; at: string; data?: ChatMessageData };
+
+/** What a copilot chat acts on: a target URL, optionally narrowed to one run. */
+export type ChatScope = { url?: string; runId?: string };
 
 /** What a chat has assembled so far. Never carries the target app's credentials. */
 export type ChatDraft = {
@@ -38,8 +53,8 @@ export type ChatDraft = {
 };
 
 export type Chat = {
-  id: string; userId: string; title: string; createdAt: string; updatedAt: string;
-  messages: ChatMessage[]; draft: ChatDraft; runId?: string;
+  id: string; userId: string; kind: ChatKind; title: string; createdAt: string; updatedAt: string;
+  messages: ChatMessage[]; draft: ChatDraft; scope?: ChatScope; pending?: { runId: string; testIds: string[] }; runId?: string;
 };
 
 /** A chat without its transcript, as the chats dropdown lists them. */
@@ -127,6 +142,40 @@ export const sendChatMessage = (id: string, text: string, snapshot: Record<strin
   apiFetch<ChatTurn>(`/chats/${encodeURIComponent(id)}/messages`, {
     method: "POST",
     body: JSON.stringify({ text, snapshot }),
+  });
+
+export type CopilotAction = "rerun" | "answer" | "clarify";
+
+export type CopilotTurn = {
+  reply: string;
+  action: CopilotAction;
+  /** The run the turn resolved to and answered about. Absent when no finished run was found. */
+  runId?: string;
+  /** Present on a rerun: what will run once `executeCopilot` is called. */
+  plan?: RerunPlanData;
+  needs: ("credentials")[];
+  title?: string;
+};
+
+export type CopilotExecution = { reply: string; result: RerunResultData };
+
+export const createCopilotChat = (scope: ChatScope) =>
+  apiFetch<{ chat: Chat }>("/copilot/chats", { method: "POST", body: JSON.stringify(scope) }).then((r) => r.chat);
+
+export const listCopilotChats = () => apiFetch<{ chats: ChatSummary[] }>("/copilot/chats").then((r) => r.chats);
+
+/** One copilot turn: the decision, not the execution. */
+export const sendCopilotMessage = (id: string, text: string) =>
+  apiFetch<CopilotTurn>(`/copilot/chats/${encodeURIComponent(id)}/messages`, { method: "POST", body: JSON.stringify({ text }) });
+
+/**
+ * Executes the chat's pending rerun. The credentials travel only in this request and are
+ * dropped by the server when it returns; they are never part of a message.
+ */
+export const executeCopilot = (id: string, credentials?: { username: string; password: string }) =>
+  apiFetch<CopilotExecution>(`/copilot/chats/${encodeURIComponent(id)}/execute`, {
+    method: "POST",
+    body: JSON.stringify(credentials ? { credentials } : {}),
   });
 
 /** Fetches a run artifact as text; null when it is not there (yet). */

@@ -37,6 +37,21 @@ export function expectationCode(exp: Expectation, target: string = expectationTa
   }
 }
 
+/** How long to wait for an element. Short on purpose: "this locator does not resolve" is a
+ *  verdict the planner, generator and healer all act on, and each of them pays this in full. */
+export const ELEMENT_TIMEOUT_MS = 5000;
+/** How long to wait for a page to load. A real target over a real network routinely needs more
+ *  than the element timeout - a slow first paint used to fail the very first goto of a crawl and
+ *  take the whole run down with it - so navigation gets its own, generous budget. */
+export const NAVIGATION_TIMEOUT_MS = 30_000;
+/** How long a screenshot may take. It is decoration, so it gets less than an element. */
+export const SCREENSHOT_TIMEOUT_MS = 3000;
+
+function applyTimeouts(context: BrowserContext): void {
+  context.setDefaultTimeout(ELEMENT_TIMEOUT_MS);
+  context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+}
+
 export class BrowserToolkit {
   private lastShot = 0;
   /** This toolkit's substitute for the planner's unique placeholder; every launch mints a fresh one. */
@@ -81,7 +96,7 @@ export class BrowserToolkit {
     const headless = opts.headless ?? process.env.QA_PILOT_HEADLESS !== "0";
     const browser = await chromium.launch({ headless });
     const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-    context.setDefaultTimeout(5000);
+    applyTimeouts(context);
     if (opts.screenshotDir) mkdirSync(opts.screenshotDir, { recursive: true });
     const cast = opts.runId && screencastEnabled() ? getScreencast(opts.runId) : undefined;
     return new BrowserToolkit(browser, context, opts.baseUrl.replace(/\/$/, ""), opts.bus, opts.agent ?? "browser", opts.screenshotDir, cast);
@@ -128,7 +143,7 @@ export class BrowserToolkit {
 
   async newContext(): Promise<BrowserContext> {
     const ctx = await this.browser.newContext({ viewport: { width: 1200, height: 800 } });
-    ctx.setDefaultTimeout(5000);
+    applyTimeouts(ctx);
     return ctx;
   }
 
@@ -142,7 +157,16 @@ export class BrowserToolkit {
     if (now - this.lastShot < 500) return "";
     this.lastShot = now;
     const file = `${this.shotDir}/${now}-${label.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}.png`;
-    await page.screenshot({ path: file });
+    // A screenshot is a picture for the run screen, never part of the verdict. A page that
+    // is still animating, mid-navigation or already closed cannot be captured, and that must
+    // cost the agent a picture, not the step - a screenshot timeout once took a whole run down
+    // from inside the planner.
+    try {
+      await page.screenshot({ path: file, timeout: SCREENSHOT_TIMEOUT_MS, animations: "disabled" });
+    } catch (e) {
+      this.bus?.log(this.agent, `screenshot skipped: ${(e as Error).message.split("\n")[0]}`);
+      return "";
+    }
     this.bus?.emit({ type: "screenshot", agent: this.agent, message: label, data: { path: file } });
     return file;
   }
@@ -205,6 +229,13 @@ export class BrowserToolkit {
         if ((await exact.count().catch(() => 0)) === 1) {
           target = exact;
           targetCode = `page.getByRole(${q(exp.role)}, { name: ${q(exp.name)}, exact: true })`;
+        } else {
+          // Several elements share the name even exactly (a product's image link and title
+          // link): the expectation is about the first of them, the same way a step that names
+          // a repeated control acts on the first. Emitting the bare locator would hand the
+          // runner a strict mode violation at every execution.
+          target = loose.first();
+          targetCode = `page.getByRole(${q(exp.role)}, { name: ${q(exp.name)} }).first()`;
         }
       }
     }

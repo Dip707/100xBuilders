@@ -79,11 +79,16 @@ function waitForReview(runId: string): Promise<Flow[]> {
 const runContexts = new Map<string, { url: string; loginSteps: Step[] }>();
 const rerunsInFlight = new Set<string>();
 
-const specPath = (runId: string, testId: string) => `${outputDir(runId)}tests/${testId}.spec.ts`;
+export const specPath = (runId: string, testId: string) => `${outputDir(runId)}tests/${testId}.spec.ts`;
 
-/** Whether a generated spec relies on the login fixture, which needs the credentials only a live run context holds. */
-function needsLogin(file: string): boolean {
+/** Whether a generated spec relies on the login fixture, which needs the credentials only a live run context or a fresh copilot request holds. */
+export function needsLogin(file: string): boolean {
   return /\bawait login\(\)/.test(readFileSync(file, "utf8"));
+}
+
+/** The login steps still in memory for a run this process finished, or null. Never persisted. */
+export function contextLoginSteps(runId: string): Step[] | null {
+  return runContexts.get(runId)?.loginSteps ?? null;
 }
 
 /**
@@ -99,37 +104,44 @@ export async function rerunBlocker(runId: string, testId: string, store: Store):
 }
 
 /**
- * Re-executes one generated test in place. The new result is emitted on the bus like any
- * other, merged into results.json, and reflected in the stored pass/fail counts, so the
- * "latest status" of the test moves without starting a whole new run. Returns null when the
- * test cannot run (see `rerunBlocker`) or is already being re-run.
+ * Re-executes several generated tests in one Playwright invocation. Each fresh result is
+ * emitted on the bus like any other, merged into results.json, and reflected in the stored
+ * pass/fail counts, so the "latest status" of each test moves without a whole new run.
+ * Tests already being re-run are skipped; the caller sees only the results that ran.
  */
-export async function rerunTest(runId: string, testId: string, store: Store): Promise<TestResult | null> {
-  if (await rerunBlocker(runId, testId, store)) return null;
-  const file = specPath(runId, testId);
-  const ctx = runContexts.get(runId) ?? { url: (await store.getRun(runId))!.url, loginSteps: [] };
-  const key = `${runId}/${testId}`;
-  if (rerunsInFlight.has(key)) return null;
-  rerunsInFlight.add(key);
+export async function rerunTests(runId: string, testIds: string[], loginSteps: Step[], store: Store): Promise<TestResult[]> {
+  const run = await store.getRun(runId);
+  if (!run) return [];
+  const ids = testIds.filter((id) => existsSync(specPath(runId, id)) && !rerunsInFlight.has(`${runId}/${id}`));
+  if (ids.length === 0) return [];
+  for (const id of ids) rerunsInFlight.add(`${runId}/${id}`);
   const bus = getBus(runId);
   try {
-    bus.log("orchestrator", `re-running ${testId}`);
-    const fresh = await runPlaywright({ runId, baseUrl: ctx.url, loginSteps: ctx.loginSteps, files: [file], bus });
-    const result = fresh.tests.find((t) => t.id === testId) ?? null;
-    if (!result) return null;
+    bus.log("orchestrator", `re-running ${ids.join(", ")}`);
+    const fresh = await runPlaywright({ runId, baseUrl: run.url, loginSteps, files: ids.map((id) => specPath(runId, id)), bus });
+    const results = fresh.tests.filter((t) => ids.includes(t.id));
     const previous = JSON.parse(readOutput(runId, "results.json") ?? '{"tests":[]}') as RunResults;
     const merged = new Map(previous.tests.map((t) => [t.id, t]));
-    merged.set(testId, result);
+    for (const r of results) merged.set(r.id, r);
     const tests = [...merged.values()];
     writeOutput(runId, "results.json", { tests, at: fresh.at });
     await record(store, bus, runId, {
       testsPassed: tests.filter((t) => t.status === "passed").length,
       testsFailed: tests.filter((t) => t.status !== "passed").length,
     });
-    return result;
+    return results;
   } finally {
-    rerunsInFlight.delete(key);
+    for (const id of ids) rerunsInFlight.delete(`${runId}/${id}`);
   }
+}
+
+/** Single-test form of `rerunTests`, kept for the per-test Re-run button. Null when blocked or already running. */
+export async function rerunTest(runId: string, testId: string, store: Store): Promise<TestResult | null> {
+  if (await rerunBlocker(runId, testId, store)) return null;
+  if (rerunsInFlight.has(`${runId}/${testId}`)) return null;
+  const ctx = runContexts.get(runId);
+  const [result] = await rerunTests(runId, [testId], ctx?.loginSteps ?? [], store);
+  return result ?? null;
 }
 
 /** Recording must never take a run down with it, so every store write here is best-effort and reported. */

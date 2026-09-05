@@ -11,7 +11,7 @@ function runRec(over: Partial<RunRecord> = {}): RunRecord {
 
 function chatRec(over: Partial<ChatRecord> = {}): ChatRecord {
   const now = new Date().toISOString();
-  return { id: "chat-1", userId: "u1", title: "New chat", createdAt: now, updatedAt: now, messages: [], draft: {}, ...over };
+  return { id: "chat-1", userId: "u1", kind: "intake", title: "New chat", createdAt: now, updatedAt: now, messages: [], draft: {}, ...over };
 }
 
 // The Mongo pass runs only when a URL is configured. It forces a database name ending in
@@ -161,6 +161,41 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     await store.insertChat(chatRec({ id: "chat-del" }));
     await store.deleteChat("chat-del");
     expect(await store.getChat("chat-del")).toBeNull();
+  });
+
+  it("listChats filters by kind and reads a legacy chat without kind as intake", async () => {
+    await store.insertChat(chatRec({ id: "intake-1" }));
+    await store.insertChat(chatRec({ id: "copilot-1", kind: "copilot", scope: { url: "http://localhost:3005" } }));
+    // Simulates a document written before `kind` existed.
+    await store.insertChat({ ...chatRec({ id: "legacy-1" }), kind: undefined as unknown as "intake" });
+
+    const intake = (await store.listChats("u1", { kind: "intake" })).map((c) => c.id).sort();
+    expect(intake).toEqual(["intake-1", "legacy-1"]);
+    const copilot = await store.listChats("u1", { kind: "copilot" });
+    expect(copilot.map((c) => c.id)).toEqual(["copilot-1"]);
+    expect(copilot[0].url).toBe("http://localhost:3005");
+    expect(copilot[0]).not.toHaveProperty("pending");
+    expect((await store.listChats("u1")).length).toBe(3);
+    expect((await store.getChat("legacy-1"))!.kind).toBe("intake");
+  });
+
+  it("appendChatTurn stores message data, scope and pending, and null clears pending", async () => {
+    await store.insertChat(chatRec({ id: "cp", kind: "copilot", scope: {} }));
+    const at = new Date().toISOString();
+    const plan = { kind: "rerun_plan" as const, runId: "run-1", testIds: ["checkout-001"], blocked: [] };
+    await store.appendChatTurn("cp", [{ role: "assistant", text: "Rerunning 1 test", at, data: plan }], {
+      scope: { url: "http://localhost:3005", runId: "run-1" },
+      pending: { runId: "run-1", testIds: ["checkout-001"] },
+    });
+    let chat = (await store.getChat("cp"))!;
+    expect(chat.messages[0].data).toEqual(plan);
+    expect(chat.scope).toEqual({ url: "http://localhost:3005", runId: "run-1" });
+    expect(chat.pending).toEqual({ runId: "run-1", testIds: ["checkout-001"] });
+
+    await store.appendChatTurn("cp", [], { pending: null });
+    chat = (await store.getChat("cp"))!;
+    expect(chat.pending).toBeUndefined();
+    expect(chat.scope).toEqual({ url: "http://localhost:3005", runId: "run-1" });
   });
 });
 
