@@ -85,7 +85,7 @@ export type Flow = z.infer<typeof FlowSchema>;
 
 // ---------- Coverage ----------
 export const CoverageGapSchema = z.object({
-  kind: z.enum(["missing_happy", "missing_negative", "missing_empty_submit", "missing_authz", "prd_uncovered", "intent_uncovered", "category_mix"]),
+  kind: z.enum(["missing_happy", "missing_negative", "missing_empty_submit", "missing_authz", "prd_uncovered", "intent_uncovered", "category_mix", "missing_error_state"]),
   target: z.string().optional(),
   requirement: z.string().optional(),
   suggest: z.string(),

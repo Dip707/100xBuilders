@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scoreCoverage, coverageNode, afterCoverage, COVERAGE_THRESHOLD, MAX_PLAN_ITERATIONS } from "../src/nodes/coverage.js";
+import { scoreCoverage, coverageNode, afterCoverage, replanStalled, COVERAGE_THRESHOLD, MAX_PLAN_ITERATIONS } from "../src/nodes/coverage.js";
 import { initialState, type CoverageVerdict, type Flow, type SiteMap } from "../src/state.js";
 import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
@@ -33,10 +33,42 @@ describe("scoreCoverage", () => {
       mk("a3", "negative", "Login empty submit shows validation"),
       mk("o1", "authz", "Orders redirects when logged out", "/orders"),
       mk("e1", "edge", "Login with very long email"),
+      mk("x1", "error_state", "Login when the auth service returns 500"),
     ];
     const v = scoreCoverage(siteMap, flows, { intent: "login and orders" });
     expect(v.score).toBeGreaterThanOrEqual(0.75);
     expect(v.gaps).toHaveLength(0);
+  });
+
+  it("flags a plan that never asks what happens when a request fails", () => {
+    // Validation errors and failed requests are different questions: the first is the app
+    // working, the second is the app under duress. A plan full of negative flows still scores
+    // this dimension zero.
+    const flows = [
+      mk("a1", "happy", "Login works"),
+      mk("a2", "negative", "Login wrong password"),
+      mk("a3", "negative", "Login empty submit shows validation"),
+      mk("o1", "authz", "Orders redirects when logged out", "/orders"),
+      mk("e1", "edge", "Login with very long email"),
+    ];
+    const v = scoreCoverage(siteMap, flows, {});
+    expect(v.checks.errors).toBe(0);
+    expect(v.gaps.map((g) => g.kind)).toContain("missing_error_state");
+  });
+
+  it("credits intent scoping from steps and assertions, not only the title", () => {
+    const flow = mk("c1", "happy", "Place order", "/checkout");
+    // Title-only matching - what this used to do - scores this flow zero for "checkout".
+    expect(flow.title.toLowerCase().includes("checkout")).toBe(false);
+    const v = scoreCoverage(siteMap, [flow], { intent: "focus on checkout" });
+    expect(v.checks.intent).toBe(1);
+    expect(v.gaps.some((g) => g.kind === "intent_uncovered")).toBe(false);
+  });
+
+  it("credits a near miss on a scoping word rather than demanding an exact substring", () => {
+    // "/order" does not contain the string "orders", but it plainly covers the intent.
+    const v = scoreCoverage(siteMap, [mk("o2", "happy", "Place an order", "/order")], { intent: "orders" });
+    expect(v.checks.intent).toBe(1);
   });
   it("counts PRD coverage from the matrix", () => {
     const flows = [mk("a1", "happy", "Login works")];
@@ -127,12 +159,44 @@ describe("afterCoverage", () => {
     const state = { ...initialState({ runId: "r", url: "http://x" }), planIterations: MAX_PLAN_ITERATIONS, coverage: { score: 0.1, gaps: [], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} } as CoverageVerdict };
     expect(afterCoverage(state, { bus, llm: new FakeLlmClient({}), headless: true })).toBe("generate");
   });
+  it("stops re-planning when an iteration only reproduced the previous score", () => {
+    const outDir = mkdtempSync(join(tmpdir(), "qa-coverage-stall-")) + "/";
+    process.env.QA_PILOT_OUTPUT = outDir;
+    mkdirSync(outDir + "r", { recursive: true });
+    writeFileSync(outDir + "r/coverage.json", JSON.stringify([{ iteration: 0, score: 0.5 }, { iteration: 1, score: 0.5 }]));
+    const bus = new EventBus("r", outDir + "r/");
+    const state = { ...initialState({ runId: "r", url: "http://x" }), planIterations: 1, coverage: { score: 0.5, gaps: [{ kind: "missing_error_state", suggest: "add an error-state flow" }], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} } as CoverageVerdict };
+    // Below threshold with iterations still available: only the stall check can route this on,
+    // so reaching "generate" proves the loop gave up deliberately rather than by exhaustion.
+    expect(state.planIterations).toBeLessThan(MAX_PLAN_ITERATIONS);
+    expect(state.coverage!.score).toBeLessThan(COVERAGE_THRESHOLD);
+    expect(afterCoverage(state, { bus, llm: new FakeLlmClient({}), headless: true })).toBe("generate");
+    const decisions = readFileSync(outDir + "r/decisions.jsonl", "utf8");
+    expect(decisions).toContain("did not improve");
+    expect(decisions).toContain("missing_error_state");
+  });
+
   it("returns plan and records a decision when score is below threshold and iterations remain", () => {
     const outDir = mkdtempSync(join(tmpdir(), "qa-coverage-")) + "/";
+    process.env.QA_PILOT_OUTPUT = outDir;   // own the output dir: afterCoverage reads coverage.json history
     const bus = new EventBus("r", outDir + "r/");
     const state = { ...initialState({ runId: "r", url: "http://x" }), planIterations: 1, coverage: { score: 0.1, gaps: [{ kind: "missing_authz", target: "/orders", suggest: "add authz flow" }], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} } as CoverageVerdict };
     expect(afterCoverage(state, { bus, llm: new FakeLlmClient({}), headless: true })).toBe("plan");
     const decisions = readFileSync(outDir + "r/decisions.jsonl", "utf8");
     expect(decisions).toContain("missing_authz");
+  });
+});
+
+describe("replanStalled", () => {
+  it("never fires on the first iteration, which has nothing to compare against", () => {
+    expect(replanStalled([])).toBe(false);
+    expect(replanStalled([0.4])).toBe(false);
+  });
+  it("fires when a re-plan reproduced the same coverage, or went backwards", () => {
+    expect(replanStalled([0.4, 0.4])).toBe(true);
+    expect(replanStalled([0.4, 0.39])).toBe(true);
+  });
+  it("lets a loop that is still making progress continue", () => {
+    expect(replanStalled([0.4, 0.6])).toBe(false);
   });
 });

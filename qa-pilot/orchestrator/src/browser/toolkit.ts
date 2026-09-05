@@ -106,6 +106,34 @@ export function navRetryAttempts(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 3;
 }
 
+/**
+ * How much accessibility snapshot a prompt may carry, in characters. 0 disables the cap.
+ *
+ * Deliberately tunable rather than fixed, because the right answer depends on the model. The
+ * evidence splits: compaction reliably helps small and mid-tier models, which lose the thread
+ * in a long observation, and can *hurt* frontier models with a large thinking budget, which do
+ * better with the raw tree. We run a flash-tier model by default, so the default caps.
+ *
+ * Truncation is on a line boundary and leaves an explicit marker: a model handed a silently
+ * cut-off tree will reasonably conclude the page ends there and report a missing element as a
+ * defect. Saying how much was dropped turns a wrong answer into a known-partial one.
+ */
+export const maxSnapshotChars = (): number => Number(process.env.QA_PILOT_MAX_SNAPSHOT_CHARS ?? 12000);
+
+export function budgetSnapshot(yaml: string, max = maxSnapshotChars()): string {
+  if (max <= 0 || yaml.length <= max) return yaml;
+  const lines = yaml.split("\n");
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > max) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  const dropped = lines.length - kept.length;
+  return `${kept.join("\n")}\n[snapshot truncated to ${max} characters; ${dropped} more element line(s) not shown]`;
+}
+
 export class BrowserToolkit {
   private lastShot = 0;
   /** This toolkit's substitute for the planner's unique placeholder; every launch mints a fresh one. */
@@ -204,7 +232,7 @@ export class BrowserToolkit {
   }
 
   async snapshot(page: Page): Promise<string> {
-    return page.locator("body").ariaSnapshot();
+    return budgetSnapshot(await page.locator("body").ariaSnapshot());
   }
 
   async screenshot(page: Page, label: string): Promise<string> {

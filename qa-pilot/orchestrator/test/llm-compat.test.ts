@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { extractJson, schemaInstruction, compatMode, baseUrl } from "../src/llm/client.js";
+import { HealSuggestionSchema } from "../src/nodes/heal.js";
+import { SelfRepairSchema, ExpectRepairSchema } from "../src/nodes/generate.js";
 
 describe("extractJson", () => {
   it("returns a bare JSON object untouched", () => {
@@ -105,4 +107,25 @@ describe("compatMode", () => {
     expect(compatMode()).toBe(true);
     Object.assign(process.env, saved);
   });
+});
+
+describe("reasoning-first field order", () => {
+  // Generation is left-to-right, so a `reason` emitted after the field it explains is a
+  // rationalisation of a token already committed rather than the thinking that chose it.
+  // Both transports carry the order - native through output_config, compat through the schema
+  // rendered into the system prompt - so the invariant is checked on both.
+  const cases = [
+    ["HealSuggestion", HealSuggestionSchema, ["candidate"]],
+    ["SelfRepair", SelfRepairSchema, ["source"]],
+    ["ExpectRepair", ExpectRepairSchema, ["role", "name", "value"]],
+  ] as const;
+  for (const [name, schema, decisions] of cases) {
+    it(`emits reason before ${decisions.join("/")} in ${name}`, () => {
+      const keys = Object.keys((z.toJSONSchema(schema, { io: "output" }) as { properties: Record<string, unknown> }).properties);
+      expect(keys).toContain("reason");
+      for (const d of decisions) expect(keys.indexOf("reason")).toBeLessThan(keys.indexOf(d));
+      const rendered = schemaInstruction(schema);
+      for (const d of decisions) expect(rendered.indexOf('"reason"')).toBeLessThan(rendered.indexOf(`"${d}"`));
+    });
+  }
 });

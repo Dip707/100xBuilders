@@ -8,6 +8,27 @@ export const PlanOutputSchema = z.object({ flows: z.array(FlowSchema) });
 /** Same as FlowSchema but allows an empty steps array, which means "could not be repaired". */
 export const RepairedFlowSchema = FlowSchema.extend({ steps: z.array(StepSchema) });
 
+/**
+ * Everything a plan repair is forbidden to touch: a repair may change how a flow *navigates*,
+ * never what it *proves* or which flow it is.
+ *
+ * `plan-repair.md` already asks for this ("Do not change the expectations"), but a prompt is a
+ * request, not a guard - the same reason `guardExpects` is enforced in code rather than
+ * trusted to `heal.md`. Left unchecked, a repair that rewrites `expected` manufactures an
+ * assertion nothing on the page satisfies: the runner fails it, the classifier calls it a
+ * defect, and the final report names an application bug that was never there. For a tool whose
+ * whole claim is telling a broken test from a broken app, a fabricated defect is as damaging
+ * as a hidden one.
+ */
+const REPAIR_IMMUTABLE = ["id", "title", "category", "priority", "preconditions", "expected", "source"] as const;
+
+type RepairImmutable = (typeof REPAIR_IMMUTABLE)[number];
+
+/** Which immutable fields a repair tried to move. Empty means the repair only touched steps. */
+export function driftedFields(before: Flow, after: Flow): RepairImmutable[] {
+  return REPAIR_IMMUTABLE.filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+}
+
 function siteMapSummary(map: SiteMap): string {
   const lines: string[] = [`origin: ${map.origin}`, `loginPath: ${map.loginPath ?? "none"}`];
   for (const p of Object.values(map.pages)) {
@@ -89,7 +110,18 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
         });
         llmCalls++;
         if (repaired.steps.length > 0) {
-          current = repaired as Flow;
+          // Take the steps and nothing else, so a repair cannot smuggle in a new assertion.
+          const drifted = driftedFields(flow, repaired);
+          if (drifted.length) {
+            deps.bus.decision({
+              node: "plan",
+              reason: `flow ${flow.id}: plan-repair also rewrote ${drifted.join(", ")}; discarded that and kept only the repaired steps`,
+              evidence: drifted.map((k) => `${k}: ${JSON.stringify(flow[k])} -> ${JSON.stringify(repaired[k])}`),
+              next: "continue",
+              at: now(),
+            });
+          }
+          current = { ...flow, steps: repaired.steps };
           result = await dryWalk(kit, current, state.siteMap!);
         }
       }
