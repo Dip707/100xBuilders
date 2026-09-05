@@ -100,7 +100,13 @@ export default function SourcesPage() {
 
         <Filmstrip frames={frames} runId={runId} current={current} onSeek={seek} />
 
-        <NextStageCta from="sources" />
+        {/*
+          The one screen that hands off by itself: the crawl is the only stage whose screen
+          is worth staying on after it ends (the recording is still there to scrub), and it
+          is followed by the longest silence in the run, so leaving the user on a finished
+          crawl is what made the app read as stalled.
+        */}
+        <NextStageCta from="sources" autoAdvance />
       </div>
     </>
   );

@@ -105,23 +105,52 @@ export function renderPlanMd(flows: Flow[]): string {
   return out.join("\n");
 }
 
+/**
+ * The phase a planner log belongs to, carried on the log's payload.
+ *
+ * The node writes nothing until it is finished, and it is the slowest stretch of a run:
+ * roughly a minute inside one LLM call and then a minute or two walking every proposed
+ * flow on the live app. Without a phase on the way through, the screen watching this node
+ * cannot tell drafting from validating, or either from a hang, so it shows an empty plan
+ * for two minutes and reads as broken. Everything the Test coverage screen says while the
+ * plan is being written is derived from these.
+ */
+export type PlannerPhase = "drafting" | "drafted" | "validating" | "repairing" | "validated";
+
 export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpdate> {
   deps.bus.emit({ type: "node_start", node: "plan" });
   let llmCalls = state.llmCalls;
+  const pages = Object.values(state.siteMap!.pages);
+  const forms = pages.reduce((n, p) => n + p.forms.length, 0);
+  const gaps = state.coverage?.gaps.length ?? 0;
+  deps.bus.log(
+    "planner",
+    gaps
+      ? `rewriting the plan to close ${gaps} coverage ${gaps === 1 ? "gap" : "gaps"}`
+      : `reading the site map: ${pages.length} ${pages.length === 1 ? "page" : "pages"}, ${forms} ${forms === 1 ? "form" : "forms"}`,
+    { phase: "drafting", pages: pages.length, forms, gaps, iteration: state.planIterations + 1, routes: pages.map((p) => p.path) },
+  );
   const out = await deps.llm.complete({ prompt: "plan", input: buildPlanInput(state), schema: PlanOutputSchema, effort: "high" });
   llmCalls++;
   const flows = out.flows.slice(0, state.maxFlows);
-  deps.bus.log("planner", `LLM proposed ${flows.length} flows`, { ids: flows.map((f) => f.id) });
+  // `ids` predates the phases and other readers still take it; the richer `flows` is what
+  // lets a watching screen name each flow before its dry walk has decided anything.
+  deps.bus.log("planner", `LLM proposed ${flows.length} flows`, {
+    phase: "drafted",
+    ids: flows.map((f) => f.id),
+    flows: flows.map((f) => ({ id: f.id, title: f.title, category: f.category, priority: f.priority })),
+  });
 
   const kit = await BrowserToolkit.launch({ headless: deps.headless, baseUrl: state.url, bus: deps.bus, runId: state.runId, agent: "planner", screenshotDir: outputDir(state.runId) + "traces/plan" });
   const kept: Flow[] = [];
   const unresolved: string[] = [];
   try {
-    for (const flow of flows) {
+    for (const [index, flow] of flows.entries()) {
+      deps.bus.log("planner", `walking ${flow.id} on the live app`, { phase: "validating", flow: flow.id, title: flow.title, index: index + 1, total: flows.length });
       let result = await walkSafely(kit, flow, state.siteMap!, deps);
       let current: Flow = flow;
       if (!result.ok && result.step >= 0) {
-        deps.bus.log("planner", `flow ${flow.id} step ${result.step} unresolved, asking for repair`);
+        deps.bus.log("planner", `flow ${flow.id} step ${result.step} unresolved, asking for repair`, { phase: "repairing", flow: flow.id, step: result.step });
         const repaired = await deps.llm.complete({
           prompt: "plan-repair",
           input: `FLOW:\n${JSON.stringify(flow)}\nFAILING_STEP: ${result.step}\nSNAPSHOT:\n${result.snapshot}`,
@@ -134,6 +163,7 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
           result = await walkSafely(kit, current, state.siteMap!, deps);
         }
       }
+      deps.bus.log("planner", `${result.ok ? "kept" : "dropped"} ${flow.id}`, { phase: "validated", flow: flow.id, ok: result.ok });
       if (result.ok) kept.push({ ...current, visits: result.visits });
       else {
         unresolved.push(flow.id);

@@ -42,7 +42,23 @@ describe("planNode", () => {
       "plan-repair": (input: string) => ({ ...JSON.parse(input.split("FLOW:\n")[1].split("\nFAILING_STEP")[0]), steps: [] }),
     });
     const state = { ...initialState({ runId: "r", url: shop.base }), siteMap };
+    // The Test coverage screen renders this node's progress from the phases on its logs,
+    // and the node is otherwise silent for the minutes it takes; the phases are a contract.
+    const phases: Array<{ phase: string; flow?: string; ok?: boolean }> = [];
+    bus.subscribe((e) => {
+      const d = e.data as { phase?: string; flow?: string; ok?: boolean } | undefined;
+      if (e.type === "agent_log" && e.agent === "planner" && d?.phase) phases.push({ phase: d.phase, flow: d.flow, ok: d.ok });
+    });
     const update = await planNode(state, { bus, llm, headless: true });
+    expect(phases.map((p) => p.phase)).toEqual([
+      "drafting", "drafted",
+      "validating", "validated",
+      "validating", "repairing", "validated",
+    ]);
+    expect(phases.filter((p) => p.phase === "validated")).toEqual([
+      { phase: "validated", flow: "auth-002", ok: true },
+      { phase: "validated", flow: "auth-999", ok: false },
+    ]);
     expect((update.plan as Flow[]).map((f) => f.id)).toEqual(["auth-002"]);
     // The routes the dry walk saw the flow on, which is what the coverage scorer credits.
     expect((update.plan as Flow[])[0].visits).toEqual(["/login"]);
