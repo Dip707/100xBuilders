@@ -22,6 +22,32 @@ async function settle(page: Page): Promise<void> {
     page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {}),
     page.waitForSelector("form, input, button, a[href]", { timeout: 6000 }).catch(() => {}),
   ]);
+  await dismissOnboardingOverlay(page);
+}
+
+/** Labels a first-run overlay dismisses itself with, never a label that commits to anything. */
+const DISMISS_LABELS = /^(skip|close|dismiss|got it|no thanks|not now|maybe later|later|×|✕|x)$/i;
+
+/**
+ * Closes a first-run onboarding dialog if one is covering the page, so a link sitting right
+ * behind it - visible, correctly located, but not receiving pointer events because the
+ * dialog's backdrop intercepts them - doesn't read as a click timeout. Only a labelled,
+ * no-commitment dismissal is pressed, never one of the survey's own options.
+ */
+async function dismissOnboardingOverlay(page: Page): Promise<void> {
+  try {
+    const dialog = page.getByRole("dialog").first();
+    if (!(await dialog.isVisible({ timeout: 500 }).catch(() => false))) return;
+    for (const b of await dialog.getByRole("button").all()) {
+      const name = ((await b.textContent().catch(() => "")) ?? "").trim();
+      if (DISMISS_LABELS.test(name)) {
+        await b.click({ timeout: 1000 }).catch(() => {});
+        return;
+      }
+    }
+  } catch {
+    /* best effort */
+  }
 }
 
 async function runStep(page: Page, s: Step): Promise<void> {
@@ -77,6 +103,20 @@ async function startLivePreview(page: Page, dir: string, title: string): Promise
 
 export const test = base.extend<{ login: () => Promise<void> }>({
   page: async ({ page }, use, testInfo) => {
+    // Generated (and self-repaired) specs reach for the idiomatic `page.waitForLoadState`
+    // themselves - the self-repair LLM has no way to know about `settle()`, only about the
+    // standard Playwright API, and its patches routinely add a bare, unbounded
+    // `waitForLoadState('networkidle')` to wait out a redirect. Against an app that never
+    // goes network-idle that call just hangs until the default timeout and then throws,
+    // failing the very test the repair was meant to fix. Redirecting every `'networkidle'`
+    // wait through the same bounded race as `settle()` makes any spec immune to this,
+    // independent of what a future self-repair happens to write.
+    const originalWaitForLoadState = page.waitForLoadState.bind(page);
+    page.waitForLoadState = (async (state?: Parameters<typeof originalWaitForLoadState>[0], options?: { timeout?: number }) => {
+      if (state === "networkidle") return settle(page);
+      return originalWaitForLoadState(state, options);
+    }) as typeof page.waitForLoadState;
+
     const network: { method: string; url: string; status: number; at: number }[] = [];
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];

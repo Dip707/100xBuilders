@@ -97,6 +97,38 @@ export async function settle(page: Page): Promise<void> {
     page.waitForLoadState("networkidle", { timeout }).catch(() => {}),
     page.waitForSelector("form, input, button, a[href]", { timeout }).catch(() => {}),
   ]);
+  await dismissOnboardingOverlay(page);
+}
+
+/** Labels a first-run overlay dismisses itself with, never a label that commits to anything. */
+const DISMISS_LABELS = /^(skip|close|dismiss|got it|no thanks|not now|maybe later|later|×|✕|x)$/i;
+
+/**
+ * Closes a first-run onboarding dialog if one is covering the page.
+ *
+ * A fresh page load of this app - any hard navigation, not just the first login ever - shows a
+ * "What best describes your role?" modal on top of the real content. The sidebar links behind
+ * it are visible and correctly located, so every symptom reads as a rendering race: a click
+ * "times out" waiting for a link that is sitting right there, because Playwright's actionability
+ * check requires the target to be receiving pointer events and the dialog's backdrop is
+ * intercepting them. No amount of waiting for content fixes that - the content is already
+ * there, wrongly hidden behind a survey. Only a labelled, no-commitment dismissal is pressed
+ * (never the survey's own options), so a dialog that is not this kind of overlay is left alone.
+ */
+async function dismissOnboardingOverlay(page: Page): Promise<void> {
+  try {
+    const dialog = page.getByRole("dialog").first();
+    if (!(await dialog.isVisible({ timeout: 500 }).catch(() => false))) return;
+    for (const b of await dialog.getByRole("button").all()) {
+      const name = ((await b.textContent().catch(() => "")) ?? "").trim();
+      if (DISMISS_LABELS.test(name)) {
+        await b.click({ timeout: 1000 }).catch(() => {});
+        return;
+      }
+    }
+  } catch {
+    /* best effort: a page with no overlay, or one that closed itself mid-check, is left alone */
+  }
 }
 
 /** Navigations to retry: a timeout, a dropped connection, a DNS blip. Not a 404. */
