@@ -228,11 +228,13 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
   });
 
   it("saves one integration per user, replaces it, never leaks it to another user, and deletes it", async () => {
-    await store.saveIntegration({ userId: "u1", provider: "linear", label: "Linear · Eng", secret: "c1", connectedAt: "2026-09-05T10:00:00.000Z" });
-    expect(await store.getIntegration("u1")).toMatchObject({ provider: "linear", secret: "c1" });
+    await store.saveIntegration({ userId: "u1", provider: "linear", connectedAccountId: "ca_1", status: "pending", connectedAt: "2026-09-05T10:00:00.000Z" });
+    const pending = (await store.getIntegration("u1"))!;
+    expect(pending).toMatchObject({ provider: "linear", connectedAccountId: "ca_1", status: "pending" });
+    expect(pending.destination).toBeUndefined();
     expect(await store.getIntegration("u2")).toBeNull();
-    await store.saveIntegration({ userId: "u1", provider: "jira", label: "Jira · ACME", secret: "c2", connectedAt: "2026-09-05T11:00:00.000Z" });
-    expect(await store.getIntegration("u1")).toMatchObject({ provider: "jira", secret: "c2", label: "Jira · ACME" });
+    await store.saveIntegration({ userId: "u1", provider: "jira", connectedAccountId: "ca_2", status: "active", destination: { id: "ACME", label: "Acme Shop (ACME)" }, connectedAt: "2026-09-05T11:00:00.000Z" });
+    expect(await store.getIntegration("u1")).toMatchObject({ provider: "jira", connectedAccountId: "ca_2", status: "active", destination: { id: "ACME", label: "Acme Shop (ACME)" } });
     await store.deleteIntegration("u1");
     expect(await store.getIntegration("u1")).toBeNull();
   });

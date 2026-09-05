@@ -260,8 +260,9 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
     async getIntegration(userId) {
       const doc = await integrations.findOne({ _id: userId });
       if (!doc) return null;
-      const { _id, ...rest } = doc;
-      return { userId: _id, ...rest };
+      const { _id, destination, ...rest } = doc;
+      // A record saved without a destination must read back without one, not with a null.
+      return { userId: _id, ...rest, ...(destination ? { destination } : {}) };
     },
     async deleteIntegration(userId) {
       await integrations.deleteOne({ _id: userId });

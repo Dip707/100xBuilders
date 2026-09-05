@@ -1,8 +1,9 @@
 import type { Defect, Flow } from "../state.js";
 
 /**
- * The ticket as the trackers do not see it: one structure, rendered to markdown for Linear
- * and to Atlassian Document Format for Jira, so the two never drift in what they say.
+ * The ticket as the trackers do not see it: one structure, rendered to markdown for both
+ * Linear and Jira (Composio converts markdown to Jira's document format), so the two never
+ * drift in what they say.
  */
 export type TicketSection = { heading: string; lines?: string[]; bullets?: string[] };
 export type TicketBody = { title: string; severity: Defect["severity"]; sections: TicketSection[] };
@@ -74,24 +75,4 @@ export function renderMarkdown(body: TicketBody): string {
       return parts.join("\n");
     })
     .join("\n\n");
-}
-
-// ---------- Atlassian Document Format ----------
-
-export type AdfNode = { type: string; attrs?: Record<string, unknown>; text?: string; content?: AdfNode[] };
-export type AdfDoc = { type: "doc"; version: 1; content: AdfNode[] };
-
-const text = (t: string): AdfNode => ({ type: "text", text: t });
-const paragraph = (t: string): AdfNode => ({ type: "paragraph", content: [text(t || " ")] });
-
-export function renderAdf(body: TicketBody): AdfDoc {
-  const content: AdfNode[] = [];
-  for (const s of body.sections) {
-    content.push({ type: "heading", attrs: { level: 3 }, content: [text(s.heading)] });
-    for (const line of s.lines ?? []) content.push(paragraph(line));
-    if (s.bullets?.length) {
-      content.push({ type: "bulletList", content: s.bullets.map((b) => ({ type: "listItem", content: [paragraph(b)] })) });
-    }
-  }
-  return { type: "doc", version: 1, content };
 }

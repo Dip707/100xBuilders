@@ -115,11 +115,22 @@ export type RunRecord = {
 
 export type TrackerProvider = "linear" | "jira";
 
+/** Where a tracker connection files issues: a Linear team id or a Jira project key, with the name shown to the person. */
+export type TrackerDestination = { id: string; label: string };
+
 /**
- * One tracker connection per user. `secret` is the AES-256-GCM ciphertext of the provider
- * config (see integrations/crypto.ts); the store never sees a plaintext API key.
+ * One tracker connection per user. The OAuth token lives with Composio; this record holds
+ * only Composio's connected account id, so nothing here is a credential.
  */
-export type IntegrationRecord = { userId: string; provider: TrackerProvider; label: string; secret: string; connectedAt: string };
+export type IntegrationRecord = {
+  userId: string;
+  provider: TrackerProvider;
+  connectedAccountId: string;
+  /** `pending` from the moment the OAuth link is created until the callback sees it active. */
+  status: "pending" | "active";
+  destination?: TrackerDestination;
+  connectedAt: string;
+};
 
 /** An issue filed in a tracker for one test of one run. */
 export type TicketRecord = {

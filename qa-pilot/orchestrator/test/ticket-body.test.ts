@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTicket, renderAdf, renderMarkdown } from "../src/integrations/ticket.js";
+import { buildTicket, renderMarkdown } from "../src/integrations/ticket.js";
 import type { Defect, Flow } from "../src/state.js";
 
 const flow: Flow = {
@@ -64,23 +64,5 @@ describe("renderers", () => {
     expect(md).toContain("Target: http://localhost:3005");
     expect(md).toContain("## Steps to reproduce\n- Log in with the test credentials\n- 1. goto /checkout");
     expect(md).toContain("## Links\nhttp://localhost:3000/runs/run-1/cases?test=checkout-001");
-  });
-
-  it("renders an ADF document with heading, paragraph and bulletList nodes and no empty text", () => {
-    const doc = renderAdf(body);
-    expect(doc.type).toBe("doc");
-    expect(doc.version).toBe(1);
-    const types = doc.content.map((n) => n.type);
-    expect(types[0]).toBe("heading");
-    expect(types).toContain("paragraph");
-    expect(types).toContain("bulletList");
-    const texts: string[] = [];
-    const walk = (n: { type: string; text?: string; content?: unknown[] }) => {
-      if (n.type === "text") texts.push(n.text ?? "");
-      for (const c of n.content ?? []) walk(c as { type: string });
-    };
-    walk(doc);
-    expect(texts.every((t) => t.length > 0)).toBe(true);
-    expect(texts).toContain("POST /api/coupon returned 500");
   });
 });

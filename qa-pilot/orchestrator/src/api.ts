@@ -27,8 +27,7 @@ import { authRoutes } from "./auth/routes.js";
 import { requireUser, type AuthEnv } from "./auth/middleware.js";
 import { artifactManifest } from "./runs/manifest.js";
 import { readSuite } from "./suite/bundle.js";
-import { ConnectSchema, liveTrackers, publicShape, TrackerError, type Trackers } from "./integrations/index.js";
-import { open as openSealed, seal, MISSING_SECRET } from "./integrations/crypto.js";
+import { liveTrackerClient, publicShape, TrackerError, type TrackerClient } from "./integrations/index.js";
 import { buildTicket } from "./integrations/ticket.js";
 import type { Defect, Flow, RunResults } from "./state.js";
 import { readOutput } from "./output.js";
@@ -62,8 +61,20 @@ const executing = new Set<string>();
 /** Tickets being filed, keyed by run and test, so a double click cannot reach the tracker twice. */
 const filing = new Set<string>();
 
-/** Where the UI lives, for the link a ticket carries back to the case page. */
+/** Where the UI lives, for the link a ticket carries back to the case page and the OAuth return. */
 const UI_ORIGIN = process.env.QA_PILOT_UI_ORIGIN ?? "http://localhost:3000";
+/** Where this API is reachable from the browser, for the OAuth callback Composio sends it to. */
+const API_ORIGIN = process.env.QA_PILOT_API_ORIGIN ?? `http://localhost:${process.env.QA_PILOT_API_PORT ?? 4000}`;
+/** How long the callback waits for Composio to see the connection active. */
+const CONNECT_WAIT_MS = 30_000;
+
+const ConnectSchema = z.object({ provider: z.enum(["linear", "jira"]), return: z.string().optional() });
+const DestinationSchema = z.object({ id: z.string().min(1) });
+
+/** Only a path on the UI may be returned to after OAuth, never another origin. */
+function safeReturn(raw: string | undefined | null): string | undefined {
+  return raw && raw.startsWith("/") && !raw.startsWith("//") ? raw : undefined;
+}
 
 function readJsonOutput<T>(runId: string, name: string, fallback: T): T {
   const raw = readOutput(runId, name);
@@ -127,12 +138,13 @@ export function createApi(opts: {
   rerunTests?: (runId: string, testIds: string[], loginSteps: Step[], store: Store) => Promise<TestResult[]>;
   /** Injectable so the copilot tests can pretend a run's login is, or is not, still in memory. */
   contextLoginSteps?: (runId: string) => Step[] | null;
-  /** Injectable so the integration tests never reach Linear or Jira. */
-  trackers?: Trackers;
+  /** Injectable so the integration tests never reach Composio. */
+  trackers?: TrackerClient;
 }) {
   const app = new Hono<AuthEnv>();
   const { store } = opts;
-  const trackers = opts.trackers ?? liveTrackers;
+  // Resolved per call: the live client needs COMPOSIO_API_KEY, and the API must boot without one.
+  const trackers = (): TrackerClient => opts.trackers ?? liveTrackerClient();
 
   app.use("*", cors({
     // credentials must be allowed for the session cookie to travel on fetch and on
@@ -169,6 +181,7 @@ export function createApi(opts: {
   app.use("/chats/*", requireUser(store));
   app.use("/copilot/*", requireUser(store));
   app.use("/integrations", requireUser(store));
+  app.use("/integrations/*", requireUser(store));
 
   // Built on first use rather than at boot: the Anthropic constructor needs a key, and the
   // API has to come up for /health and /auth on a machine that has none configured.
@@ -428,41 +441,127 @@ export function createApi(opts: {
 
   // ---- Tracker integrations --------------------------------------------------------------
   //
-  // One Linear or Jira connection per user. The provider config is verified against the
-  // tracker, sealed, and stored; it is opened again only inside the ticket route, and the
-  // client only ever sees the provider and a label.
+  // One Linear or Jira connection per user, made through Composio's OAuth. qa-pilot keeps
+  // only Composio's connected account id and the destination (team or project) issues go
+  // to; the token never touches this process.
+
+  /** The tracker client, or a 500 naming the missing key when it cannot be built. */
+  function trackerOr500(c: { json: (body: unknown, status: 500) => Response }): TrackerClient | Response {
+    try {
+      return trackers();
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  }
 
   app.get("/integrations", async (c) => {
     const rec = await store.getIntegration(c.get("user").id);
     return c.json({ integration: rec ? publicShape(rec) : null });
   });
 
-  app.put("/integrations", async (c) => {
+  app.post("/integrations/connect", async (c) => {
     const parsed = ConnectSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const client = trackerOr500(c);
+    if (client instanceof Response) return client;
     const userId = c.get("user").id;
-    let verified: { config: unknown; label: string };
+    const previous = await store.getIntegration(userId);
+    if (previous) await client.disconnect(previous.connectedAccountId).catch((err) => console.error("[integrations] disconnect failed:", err));
+    const returnTo = safeReturn(parsed.data.return);
+    const callbackUrl = `${API_ORIGIN}/integrations/callback${returnTo ? `?return=${encodeURIComponent(returnTo)}` : ""}`;
+    let started: { connectedAccountId: string; redirectUrl: string };
     try {
-      verified = await trackers.verify(parsed.data.provider, parsed.data);
+      started = await client.startConnection(userId, parsed.data.provider, callbackUrl);
     } catch (err) {
-      if (err instanceof TrackerError) return c.json({ error: err.message }, 400);
-      console.error("[integrations] verify failed:", err);
-      return c.json({ error: `could not reach ${parsed.data.provider}; try again` }, 502);
+      if (err instanceof TrackerError) return c.json({ error: err.message }, 502);
+      console.error("[integrations] connect failed:", err);
+      return c.json({ error: "could not reach Composio; try again" }, 502);
     }
-    let secret: string;
+    await store.saveIntegration({ userId, provider: parsed.data.provider, connectedAccountId: started.connectedAccountId, status: "pending", connectedAt: new Date().toISOString() });
+    return c.json({ redirectUrl: started.redirectUrl });
+  });
+
+  /**
+   * Where Composio sends the browser after OAuth. The session cookie names the user, so a
+   * guessed URL from a stranger is a 401 and changes nothing. Always ends in a redirect to
+   * Settings, carrying the return path and any failure reason.
+   */
+  app.get("/integrations/callback", async (c) => {
+    const userId = c.get("user").id;
+    const returnTo = safeReturn(c.req.query("return"));
+    const settings = (error?: string) => {
+      const q = new URLSearchParams();
+      if (returnTo) q.set("return", returnTo);
+      if (error) q.set("error", error);
+      const qs = q.toString();
+      return c.redirect(`${UI_ORIGIN}/settings${qs ? `?${qs}` : ""}`, 302);
+    };
+    const rec = await store.getIntegration(userId);
+    if (!rec) return settings("no connection was in progress; start again");
+    if (rec.status === "active") return settings();
+    const client = trackerOr500(c);
+    if (client instanceof Response) return client;
+    if (c.req.query("status") === "failed") {
+      await store.deleteIntegration(userId);
+      await client.disconnect(rec.connectedAccountId).catch(() => {});
+      return settings(`${rec.provider === "linear" ? "Linear" : "Jira"} did not authorise the connection`);
+    }
+    const outcome = await client.awaitConnection(rec.connectedAccountId, CONNECT_WAIT_MS);
+    if (outcome !== "active") {
+      await store.deleteIntegration(userId);
+      return settings(outcome === "timeout" ? "the connection did not become active in time; try again" : "the connection failed; try again");
+    }
+    let destinations: { id: string; label: string }[] = [];
     try {
-      secret = seal(verified.config);
+      destinations = await client.listDestinations(userId, rec.provider, rec.connectedAccountId);
     } catch (err) {
-      if ((err as Error).message === MISSING_SECRET) return c.json({ error: MISSING_SECRET }, 500);
-      throw err;
+      console.error("[integrations] listing destinations failed:", err);
     }
-    const rec = { userId, provider: parsed.data.provider, label: verified.label, secret, connectedAt: new Date().toISOString() };
-    await store.saveIntegration(rec);
-    return c.json({ integration: publicShape(rec) });
+    await store.saveIntegration({ ...rec, status: "active", ...(destinations.length === 1 ? { destination: destinations[0] } : {}), connectedAt: new Date().toISOString() });
+    return settings();
+  });
+
+  app.get("/integrations/destinations", async (c) => {
+    const userId = c.get("user").id;
+    const rec = await store.getIntegration(userId);
+    if (!rec || rec.status !== "active") return c.json({ error: "no active connection" }, 409);
+    const client = trackerOr500(c);
+    if (client instanceof Response) return client;
+    try {
+      return c.json({ destinations: await client.listDestinations(userId, rec.provider, rec.connectedAccountId) });
+    } catch (err) {
+      if (err instanceof TrackerError) return c.json({ error: err.message }, 502);
+      console.error("[integrations] listing destinations failed:", err);
+      return c.json({ error: "could not list destinations; try again" }, 502);
+    }
+  });
+
+  app.put("/integrations/destination", async (c) => {
+    const parsed = DestinationSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const userId = c.get("user").id;
+    const rec = await store.getIntegration(userId);
+    if (!rec || rec.status !== "active") return c.json({ error: "no active connection" }, 409);
+    const client = trackerOr500(c);
+    if (client instanceof Response) return client;
+    const destination = (await client.listDestinations(userId, rec.provider, rec.connectedAccountId)).find((d) => d.id === parsed.data.id);
+    if (!destination) return c.json({ error: "that team or project is not one this connection can file into" }, 400);
+    const next = { ...rec, destination };
+    await store.saveIntegration(next);
+    return c.json({ integration: publicShape(next) });
   });
 
   app.delete("/integrations", async (c) => {
-    await store.deleteIntegration(c.get("user").id);
+    const userId = c.get("user").id;
+    const rec = await store.getIntegration(userId);
+    if (rec) {
+      await store.deleteIntegration(userId);
+      try {
+        trackers().disconnect(rec.connectedAccountId).catch((err) => console.error("[integrations] disconnect failed:", err));
+      } catch {
+        // No Composio key: the record is gone, which is what the person asked for.
+      }
+    }
     return c.body(null, 204);
   });
 
@@ -490,7 +589,9 @@ export function createApi(opts: {
     if (!entry || !flow) return c.json({ error: "not found" }, 404);
 
     const integration = await store.getIntegration(userId);
-    if (!integration) return c.json({ error: "connect Linear or Jira in Settings to file a ticket", needs: ["integration"] }, 412);
+    if (!integration || integration.status !== "active" || !integration.destination) {
+      return c.json({ error: "connect Linear or Jira in Settings, and pick where issues go, to file a ticket", needs: ["integration"] }, 412);
+    }
 
     const existing = await store.findTicket(userId, run.id, testId);
     if (existing) return c.json({ ticket: existing });
@@ -499,13 +600,8 @@ export function createApi(opts: {
     if (filing.has(slot)) return c.json({ error: "this ticket is already being filed" }, 409);
     filing.add(slot);
     try {
-      let config: unknown;
-      try {
-        config = openSealed(integration.secret);
-      } catch (err) {
-        if ((err as Error).message === MISSING_SECRET) return c.json({ error: MISSING_SECRET }, 500);
-        return c.json({ error: "the stored tracker connection could not be read; reconnect it in Settings" }, 500);
-      }
+      const client = trackerOr500(c);
+      if (client instanceof Response) return client;
       const defect = readJsonOutput<Defect[]>(run.id, "defects.json", []).find((d) => d.flow === testId);
       const latest = readJsonOutput<RunResults>(run.id, "results.json", { tests: [], at: "" });
       const latestResult = (Array.isArray(latest.tests) ? latest.tests : []).find((t) => t.id === testId);
@@ -517,11 +613,11 @@ export function createApi(opts: {
       });
       let created: { key: string; url: string };
       try {
-        created = await trackers.createIssue(integration.provider, config, body);
+        created = await client.createIssue(userId, integration.provider, integration.connectedAccountId, integration.destination, body);
       } catch (err) {
         if (err instanceof TrackerError) return c.json({ error: err.message }, 502);
         console.error("[tickets] create failed:", err);
-        return c.json({ error: `could not reach ${integration.provider}; try again` }, 502);
+        return c.json({ error: `could not reach ${integration.provider} through Composio; try again` }, 502);
       }
       const ticket = { id: randomUUID(), userId, runId: run.id, testId, provider: integration.provider, key: created.key, url: created.url, createdAt: new Date().toISOString() };
       try {
