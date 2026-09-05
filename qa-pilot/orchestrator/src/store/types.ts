@@ -9,7 +9,29 @@ export type User = { id: string; email: string; createdAt: string };
 /** Newest N messages kept per chat, so a long conversation cannot grow a document without bound. */
 export const CHAT_MESSAGE_CAP = 200;
 
-export type ChatMessage = { role: "user" | "assistant"; text: string; at: string };
+export type ChatKind = "intake" | "copilot";
+
+/** What a copilot chat acts on: a target URL, optionally narrowed to one run. */
+export type ChatScope = { url?: string; runId?: string };
+
+/** A rerun the copilot decided on: the tests it will run, and the ones it cannot and why. */
+export type RerunPlanData = {
+  kind: "rerun_plan";
+  runId: string;
+  testIds: string[];
+  blocked: { id: string; reason: string }[];
+};
+
+/** The outcome of an executed rerun, stored on the message so reopening the chat shows it. */
+export type RerunResultData = {
+  kind: "rerun_result";
+  runId: string;
+  results: { id: string; title: string; status: string; error?: string; durationMs?: number }[];
+};
+
+export type ChatMessageData = RerunPlanData | RerunResultData;
+
+export type ChatMessage = { role: "user" | "assistant"; text: string; at: string; data?: ChatMessageData };
 
 /**
  * The run configuration a chat has assembled so far - the same fields the Start-a-run form
@@ -31,18 +53,33 @@ export type RunDraft = {
 export type ChatRecord = {
   id: string;
   userId: string;
+  /** Documents written before this field existed have none and are read as "intake". */
+  kind: ChatKind;
   title: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
-  /** Accumulated run configuration. Reopening a chat restores the form from this. */
+  /** Accumulated run configuration. Intake only; a copilot chat stores {}. */
   draft: RunDraft;
-  /** Set when a run is started from this chat, so history links to what it produced. */
+  /** Copilot only. */
+  scope?: ChatScope;
+  /** Copilot only: a rerun decided but not yet executed. */
+  pending?: { runId: string; testIds: string[] };
+  /** Set when a run is started from an intake chat, so history links to what it produced. */
   runId?: string;
 };
 
 /** A chat without its transcript, for the chats dropdown. */
-export type ChatSummary = Omit<ChatRecord, "messages" | "draft"> & { url?: string };
+export type ChatSummary = Omit<ChatRecord, "messages" | "draft" | "pending"> & { url?: string };
+
+export type ChatTurnPatch = {
+  draft?: RunDraft;
+  title?: string;
+  runId?: string;
+  scope?: ChatScope;
+  /** `null` clears a pending rerun once it has executed. */
+  pending?: { runId: string; testIds: string[] } | null;
+};
 
 export type RunRecord = {
   id: string;
@@ -116,13 +153,13 @@ export interface Store {
 
   insertChat(rec: ChatRecord): Promise<void>;
   getChat(id: string): Promise<ChatRecord | null>;
-  listChats(userId: string, limit?: number): Promise<ChatSummary[]>;
+  listChats(userId: string, opts?: { limit?: number; kind?: ChatKind }): Promise<ChatSummary[]>;
   /**
    * Appends the turn's messages and merges the draft, title and runId in a single write, so
    * a turn cannot half-land. Unknown ids are ignored rather than upserted: an id that is not
    * already there failed the ownership check, and inventing a document would hide that.
    */
-  appendChatTurn(id: string, messages: ChatMessage[], patch: { draft?: RunDraft; title?: string; runId?: string }): Promise<void>;
+  appendChatTurn(id: string, messages: ChatMessage[], patch: ChatTurnPatch): Promise<void>;
   deleteChat(id: string): Promise<void>;
 
   close(): Promise<void>;

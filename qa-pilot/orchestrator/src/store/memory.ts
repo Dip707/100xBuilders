@@ -7,10 +7,16 @@ import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, wit
  * database. Expiry and derived status are implemented here exactly as Mongo implements
  * them, and `test/store.test.ts` runs the same contract against both.
  */
-/** Drops the transcript and draft, mirroring what the Mongo projection leaves out. */
+/** Drops the transcript, draft and pending rerun, mirroring what the Mongo projection leaves out. */
 function summary(rec: ChatRecord): ChatSummary {
-  const { messages: _messages, draft, ...rest } = rec;
-  return draft.url ? { ...rest, url: draft.url } : rest;
+  const { messages: _messages, draft, pending: _pending, ...rest } = rec;
+  const url = rec.kind === "copilot" ? rec.scope?.url : draft.url;
+  return url ? { ...rest, url } : rest;
+}
+
+/** A document written before `kind` existed is an intake chat. */
+function withKind(rec: ChatRecord): ChatRecord {
+  return { ...rec, kind: rec.kind ?? "intake" };
 }
 
 export function memoryStore(): Store {
@@ -81,11 +87,13 @@ export function memoryStore(): Store {
     },
     async getChat(id) {
       const rec = chats.get(id);
-      return rec ? { ...rec, messages: [...rec.messages], draft: { ...rec.draft } } : null;
+      return rec ? withKind({ ...rec, messages: [...rec.messages], draft: { ...rec.draft } }) : null;
     },
-    async listChats(userId, limit = 50) {
+    async listChats(userId, opts = {}) {
+      const limit = opts.limit ?? 50;
       return [...chats.values()]
-        .filter((c) => c.userId === userId)
+        .map(withKind)
+        .filter((c) => c.userId === userId && (!opts.kind || c.kind === opts.kind))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .slice(0, limit)
         .map(summary);
@@ -93,14 +101,18 @@ export function memoryStore(): Store {
     async appendChatTurn(id, messages, patch) {
       const cur = chats.get(id);
       if (!cur) return;
-      chats.set(id, {
+      const next: ChatRecord = {
         ...cur,
         messages: cur.messages.concat(messages).slice(-CHAT_MESSAGE_CAP),
         draft: patch.draft ? { ...patch.draft } : cur.draft,
         title: patch.title ?? cur.title,
         runId: patch.runId ?? cur.runId,
+        scope: patch.scope ? { ...patch.scope } : cur.scope,
         updatedAt: new Date().toISOString(),
-      });
+      };
+      if (patch.pending === null) delete next.pending;
+      else if (patch.pending) next.pending = { ...patch.pending, testIds: [...patch.pending.testIds] };
+      chats.set(id, next);
     },
     async deleteChat(id) {
       chats.delete(id);

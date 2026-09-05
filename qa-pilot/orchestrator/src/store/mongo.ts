@@ -1,11 +1,11 @@
-import { MongoClient, type Collection, type Db } from "mongodb";
+import { MongoClient, type Collection, type Db, type Filter } from "mongodb";
 import { randomUUID } from "node:crypto";
 import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type RunRecord, type Store, type User } from "./types.js";
 
 type UserDoc = { _id: string; email: string; passwordHash: string; createdAt: string };
 type SessionDoc = { _id: string; userId: string; createdAt: string; expiresAt: Date };
 type RunDoc = Omit<RunRecord, "id"> & { _id: string };
-type ChatDoc = Omit<ChatRecord, "id"> & { _id: string };
+type ChatDoc = Omit<ChatRecord, "id" | "kind"> & { _id: string; kind?: ChatRecord["kind"] };
 
 const DUPLICATE_KEY = 11000;
 /** Case-insensitive comparison for the unique email index and for lookups. */
@@ -188,19 +188,24 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
       const doc = await chats.findOne({ _id: id });
       if (!doc) return null;
       const { _id, ...rest } = doc;
-      return { id: _id, ...rest };
+      return { id: _id, ...rest, kind: rest.kind ?? "intake" };
     },
-    async listChats(userId, limit = 50) {
-      // draft is projected in only for its url, which the dropdown shows under the title;
-      // the transcript never leaves the database for a list request.
+    async listChats(userId, opts = {}) {
+      // A document written before `kind` existed has none and is an intake chat.
+      const kind: Filter<ChatDoc> = opts.kind === "intake"
+        ? { $or: [{ kind: "intake" }, { kind: { $exists: false } }] }
+        : opts.kind ? { kind: opts.kind } : {};
+      // draft and scope are projected in only for their url, which the dropdown shows under
+      // the title; the transcript never leaves the database for a list request.
       const docs = await chats
-        .find({ userId }, { projection: { messages: 0 } })
+        .find({ userId, ...kind }, { projection: { messages: 0, pending: 0 } })
         .sort({ updatedAt: -1 })
-        .limit(limit)
+        .limit(opts.limit ?? 50)
         .toArray();
       return docs.map(({ _id, draft, ...rest }) => {
-        const s: ChatSummary = { id: _id, ...(rest as Omit<ChatSummary, "id">) };
-        if (draft?.url) s.url = draft.url;
+        const s: ChatSummary = { id: _id, ...(rest as Omit<ChatSummary, "id">), kind: rest.kind ?? "intake" };
+        const url = s.kind === "copilot" ? rest.scope?.url : draft?.url;
+        if (url) s.url = url;
         return s;
       });
     },
@@ -209,10 +214,13 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
       if (patch.draft) set.draft = patch.draft;
       if (patch.title) set.title = patch.title;
       if (patch.runId) set.runId = patch.runId;
+      if (patch.scope) set.scope = patch.scope;
+      if (patch.pending) set.pending = patch.pending;
       // $each with $slice: -CAP keeps the newest CAP messages in the same write that appends,
       // so the cap is enforced by the database rather than by a read-modify-write race.
       await chats.updateOne({ _id: id }, {
         $set: set,
+        ...(patch.pending === null ? { $unset: { pending: "" } } : {}),
         ...(messages.length > 0 ? { $push: { messages: { $each: messages, $slice: -CHAT_MESSAGE_CAP } } } : {}),
       });
     },

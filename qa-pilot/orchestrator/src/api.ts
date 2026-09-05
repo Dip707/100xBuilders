@@ -165,7 +165,7 @@ export function createApi(opts: {
   app.post("/chats", async (c) => {
     const now = new Date().toISOString();
     const chat: ChatRecord = {
-      id: randomUUID(), userId: c.get("user").id, title: UNTITLED_CHAT,
+      id: randomUUID(), userId: c.get("user").id, kind: "intake", title: UNTITLED_CHAT,
       createdAt: now, updatedAt: now, messages: [], draft: {},
     };
     await store.insertChat(chat);
@@ -173,7 +173,7 @@ export function createApi(opts: {
   });
 
   app.get("/chats", async (c) => {
-    return c.json({ chats: await store.listChats(c.get("user").id) });
+    return c.json({ chats: await store.listChats(c.get("user").id, { kind: "intake" }) });
   });
 
   app.get("/chats/:chatId", async (c) => {
