@@ -320,3 +320,34 @@ describe("suite download", () => {
     expect((await app.request(`${ORIGIN}/runs/api-r10/suite.zip`, { headers: { cookie } })).status).toBe(404);
   });
 });
+
+describe("events follow mode", () => {
+  it("keeps the stream open past done when asked, so a later rerun's events still arrive", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-follow-")) + "/";
+    const bus = getBus("api-follow");
+    bus.emit({ type: "done", message: "complete" });
+    await own("api-follow");
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+
+    // Without follow the stream ends right after the replay.
+    const closed = await app.request(`${ORIGIN}/events/api-follow`, { headers: { cookie } });
+    expect(await closed.text()).toContain("event: done");
+
+    const res = await app.request(`${ORIGIN}/events/api-follow?follow=1`, { headers: { cookie } });
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let seen = "";
+    const readUntil = async (marker: string) => {
+      while (!seen.includes(marker)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`stream ended before ${marker}`);
+        seen += decoder.decode(value);
+      }
+    };
+    await readUntil("event: done");
+    bus.emit({ type: "test_start", data: { id: "checkout-001" } });
+    await readUntil("event: test_start");
+    expect(seen).toContain('"id":"checkout-001"');
+    await reader.cancel();
+  });
+});

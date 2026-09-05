@@ -149,6 +149,8 @@ export type CopilotAction = "rerun" | "answer" | "clarify";
 export type CopilotTurn = {
   reply: string;
   action: CopilotAction;
+  /** The run the turn resolved to and answered about. Absent when no finished run was found. */
+  runId?: string;
   /** Present on a rerun: what will run once `executeCopilot` is called. */
   plan?: RerunPlanData;
   needs: ("credentials")[];

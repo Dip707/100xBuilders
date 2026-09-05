@@ -115,6 +115,7 @@ describe("copilot turn", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.action).toBe("rerun");
+    expect(body.runId).toBe("shop-1");
     expect(body.plan).toEqual({ kind: "rerun_plan", runId: "shop-1", testIds: ["checkout-001", "checkout-002"], blocked: [] });
     expect(body.needs).toEqual([]);
     expect(body.title).toBe("Rerun failed checkout tests");

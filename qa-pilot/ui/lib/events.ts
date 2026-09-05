@@ -4,7 +4,13 @@ import { API } from "./api";
 
 export type RunEvent = { type: string; runId: string; at: string; node?: string; agent?: string; message?: string; data?: unknown };
 
-export function useRunEvents(runId: string | null) {
+/**
+ * The run's events, replayed from the start and then live. By default the stream closes
+ * with the run's `done`; `follow` keeps it open past that, for a screen watching a rerun of
+ * a finished run's tests - those land on the same stream after `done`.
+ */
+export function useRunEvents(runId: string | null, opts: { follow?: boolean } = {}) {
+  const follow = opts.follow === true;
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [trackedRunId, setTrackedRunId] = useState<string | null>(null);
   const ref = useRef<EventSource | null>(null);
@@ -26,7 +32,7 @@ export function useRunEvents(runId: string | null) {
     if (!runId) return;
     // The events route is authenticated, and EventSource sends no cookies cross-origin
     // unless it is told to.
-    const es = new EventSource(`${API}/events/${runId}`, { withCredentials: true });
+    const es = new EventSource(`${API}/events/${runId}${follow ? "?follow=1" : ""}`, { withCredentials: true });
     ref.current = es;
     const push = (e: MessageEvent) => {
       // "error" is both our app-level SSE event name and EventSource's native
@@ -39,12 +45,12 @@ export function useRunEvents(runId: string | null) {
       }
       const parsed = JSON.parse(e.data) as RunEvent;
       setEvents((prev) => [...prev, parsed]);
-      if (parsed.type === "done") es.close();
+      if (parsed.type === "done" && !follow) es.close();
     };
     for (const t of ["node_start", "node_end", "decision", "agent_log", "screenshot", "test_start", "test_result", "error", "done"]) es.addEventListener(t, push as EventListener);
     return () => es.close();
     // seenIds is re-derived from runId (see useMemo above), so it changes in
     // lockstep with runId and does not need to be listed separately.
-  }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [runId, follow]); // eslint-disable-line react-hooks/exhaustive-deps
   return events;
 }

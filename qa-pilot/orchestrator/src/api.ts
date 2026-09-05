@@ -346,7 +346,7 @@ export function createApi(opts: {
       ...(title ? { title } : {}),
       ...(plan ? { pending: { runId: plan.runId, testIds: plan.testIds } } : {}),
     });
-    return c.json({ reply: decision.reply, action: decision.action, ...(plan ? { plan } : {}), needs, ...(title ? { title } : {}) });
+    return c.json({ reply: decision.reply, action: decision.action, runId: run.id, ...(plan ? { plan } : {}), needs, ...(title ? { title } : {}) });
   });
 
   app.post("/copilot/chats/:chatId/execute", async (c) => {
@@ -434,9 +434,15 @@ export function createApi(opts: {
     return c.json({ result });
   });
 
+  /**
+   * The run's event stream: the whole history so far, then whatever follows. The stream
+   * closes once the run is done, unless `?follow=1` asks it to stay open - a rerun of a
+   * finished run's tests emits on the same bus after `done`, and the copilot watches those.
+   */
   app.get("/events/:runId", async (c) => {
     const runId = c.req.param("runId");
     if (!(await ownedRun(runId, c.get("user").id))) return c.json({ error: "not found" }, 404);
+    const follow = c.req.query("follow") === "1";
     const bus = getBus(runId);
     return streamSSE(c, async (stream) => {
       let id = 0;
@@ -445,11 +451,11 @@ export function createApi(opts: {
         await stream.writeSSE({ event: e.type, data: JSON.stringify(e), id: String(id++) });
         if (e.type === "done") finished = true;
       }
-      if (finished) return;
+      if (finished && !follow) return;
       await new Promise<void>((resolveStream) => {
         const unsub = bus.subscribe((e) => {
           stream.writeSSE({ event: e.type, data: JSON.stringify(e), id: String(id++) }).catch(() => { unsub(); resolveStream(); });
-          if (e.type === "done") { unsub(); resolveStream(); }
+          if (e.type === "done" && !follow) { unsub(); resolveStream(); }
         });
         stream.onAbort(() => { unsub(); resolveStream(); });
       });

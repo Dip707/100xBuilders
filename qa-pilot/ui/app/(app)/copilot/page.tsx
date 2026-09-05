@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { Icon, Wallpaper } from "@/components/ui";
 import { ChatsMenu } from "@/components/chat/ChatsMenu";
@@ -43,6 +44,8 @@ export default function CopilotPage() {
   const [needsCredentials, setNeedsCredentials] = useState(false);
   const [credentials, setCredentials] = useState(EMPTY_CREDENTIALS);
   const [running, setRunning] = useState<{ plan: RerunPlanData; at: string } | null>(null);
+  /** The run the chat has settled on, once a turn has resolved one. */
+  const [scopeRunId, setScopeRunId] = useState<string | null>(null);
 
   const refreshChats = useCallback(() => {
     listCopilotChats().then(setChats).catch(() => {});
@@ -50,7 +53,7 @@ export default function CopilotPage() {
   useEffect(refreshChats, [refreshChats]);
 
   // The run's event stream, only while a rerun is executing.
-  const events = useRunEvents(running?.plan.runId ?? null);
+  const events = useRunEvents(running?.plan.runId ?? null, { follow: true });
   const statuses = useMemo(() => (running ? liveStatuses(running.plan, events, running.at) : null), [running, events]);
   const live = running && statuses ? { plan: running.plan, statuses } : null;
 
@@ -60,6 +63,7 @@ export default function CopilotPage() {
     setError(null);
     setNeedsCredentials(false);
     setCredentials(EMPTY_CREDENTIALS);
+    setScopeRunId(chat.scope?.runId ?? null);
     // A chat reopened mid-rerun resumes watching the same plan.
     setRunning(chat.pending ? pendingPlan(chat.messages) : null);
   };
@@ -95,6 +99,7 @@ export default function CopilotPage() {
       const id = chatId ?? (await createCopilotChat(scopeFromUrl)).id;
       if (!chatId) setChatId(id);
       const turn = await sendCopilotMessage(id, trimmed);
+      if (turn.runId) setScopeRunId(turn.runId);
       const assistantAt = new Date().toISOString();
       setMessages((prev) => prev.concat({ role: "assistant", text: turn.reply, at: assistantAt, ...(turn.plan ? { data: turn.plan } : {}) }));
       refreshChats();
@@ -134,6 +139,7 @@ export default function CopilotPage() {
     setNeedsCredentials(false);
     setCredentials(EMPTY_CREDENTIALS);
     setRunning(null);
+    setScopeRunId(null);
   }
 
   async function remove(id: string) {
@@ -152,11 +158,21 @@ export default function CopilotPage() {
         title="Copilot"
         subtitle="Ask about a finished run, or tell it what to run again. It finds the run, checks the tests exist, reruns them and reports here."
         actions={
-          <ChatsMenu chats={chats} currentId={chatId} open={menuOpen} onOpen={setMenuOpen} onSelect={open_} onNew={reset} onDelete={remove} />
+          <>
+            {scopeRunId && (
+              <Link
+                href={`/runs/${encodeURIComponent(scopeRunId)}`} title="The run this chat is working on"
+                className="inline-flex h-7 items-center gap-1.5 rounded-input px-2 font-mono text-[12px] text-muted transition-colors hover:bg-selected hover:text-fg"
+              >
+                <Icon name="play" size={11} /> {scopeRunId}
+              </Link>
+            )}
+            <ChatsMenu chats={chats} currentId={chatId} open={menuOpen} onOpen={setMenuOpen} onSelect={open_} onNew={reset} onDelete={remove} align="right" />
+          </>
         }
       />
 
-      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6 pb-6">
+      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6">
         {messages.length === 0 && !busy ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
             <p className="text-[13.5px] text-muted">
@@ -181,18 +197,21 @@ export default function CopilotPage() {
           />
         )}
 
-        {error && (
-          <p role="alert" className="mb-2 flex items-center gap-2 rounded-input border border-fail/25 bg-fail/10 px-3 py-2 text-[13px] text-fail">
-            <Icon name="alert" size={14} /> {error}
-          </p>
-        )}
-
-        <Composer
-          value={text} onChange={setText} onSend={() => void send(text)}
-          busy={busy || (running !== null && !settled)}
-          placeholder={running ? "Waiting for the rerun to finish" : "Rerun the tests that failed last time, especially checkout"}
-          ariaLabel="Message the copilot"
-        />
+        {/* Pinned to the bottom of the viewport so a long conversation scrolls behind it and
+            the box is always in reach, the same way the start form keeps its action bar. */}
+        <div className="sticky bottom-0 z-20 bg-surface/90 pb-6 pt-3 backdrop-blur-md">
+          {error && (
+            <p role="alert" className="mb-2 flex items-center gap-2 rounded-input border border-fail/25 bg-fail/10 px-3 py-2 text-[13px] text-fail">
+              <Icon name="alert" size={14} /> {error}
+            </p>
+          )}
+          <Composer
+            value={text} onChange={setText} onSend={() => void send(text)}
+            busy={busy || (running !== null && !settled)}
+            placeholder={running ? "Waiting for the rerun to finish" : "Rerun the tests that failed last time, especially checkout"}
+            ariaLabel="Message the copilot"
+          />
+        </div>
       </div>
     </div>
   );
