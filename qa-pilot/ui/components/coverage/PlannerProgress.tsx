@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Icon, Meter } from "@/components/ui";
+import { Icon, Meter, Spinner } from "@/components/ui";
 import { formatDuration } from "@/lib/format";
 import type { PlannerFlow, PlannerProgress as Progress } from "@/lib/planner";
 
@@ -60,21 +60,84 @@ function LiveViewport({ src, action }: { src: string | null; action: string | nu
   );
 }
 
-/** The routes the crawl found, listed while the planner reads them and there is nothing else to show. */
+/**
+ * An indeterminate track, for the stretch of the run whose only honest progress report is
+ * "still going". A determinate meter here would have to invent a percentage: the model is
+ * inside one call and tells us nothing until it returns.
+ */
+function Sweep({ label }: { label: string }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] tracking-[0.4px] text-muted">{label}</p>
+      <div className="h-1 overflow-hidden rounded-full bg-raised" role="progressbar" aria-label={label} aria-busy="true">
+        <div className="h-full w-1/3 animate-sweep rounded-full bg-fg" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The routes the crawl found, listed while the planner reads them and there is nothing else
+ * to show.
+ *
+ * The panel carries the wait, so it moves: a beam crossing the header and the chips lighting
+ * one after another, staggered so the row reads as a pass over the crawl rather than a dozen
+ * things blinking at once. This used to be a static list beside an 11px spinner, which at a
+ * glance was indistinguishable from a hung screen.
+ */
 function Routes({ routes }: { routes: string[] }) {
   return (
-    <div className="rounded-box border border-line bg-inset p-3">
-      <h3 className="text-[11px] font-medium uppercase tracking-[0.6px] text-subtle">Reading</h3>
-      <ul className="mt-2.5 flex flex-wrap gap-1.5">
-        {routes.map((r) => (
-          <li key={r} className="rounded-chip border border-line bg-surface px-2 py-1 font-mono text-[11.5px] text-body">{r}</li>
-        ))}
-      </ul>
-      <p className="mt-3 text-[12px] leading-relaxed text-muted">
-        Each page, form and gated route goes to the planner in one pass, so it can write flows that cross
-        between them rather than one page at a time.
-      </p>
+    <div className="overflow-hidden rounded-box border border-line bg-inset">
+      <div className="relative flex items-center gap-2 border-b border-line px-3 py-2">
+        <Spinner size={13} />
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.6px] text-subtle">Reading the crawl</h3>
+        <span className="ml-auto font-mono text-[11px] text-subtle">{routes.length}</span>
+        {/* A beam along the header rule: the one piece of motion wide enough to read from across a room. */}
+        <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-[-1px] h-px overflow-hidden">
+          <span className="block h-full w-1/3 animate-sweep bg-gradient-to-r from-transparent via-fg to-transparent" />
+        </span>
+      </div>
+      <div className="p-3">
+        <ul className="flex flex-wrap gap-1.5">
+          {routes.map((r, i) => (
+            <li
+              key={r}
+              className="animate-chip-scan rounded-chip border border-line bg-surface px-2 py-1 font-mono text-[11.5px] text-body"
+              style={{ animationDelay: `${i * 120}ms` }}
+            >
+              {r}
+            </li>
+          ))}
+        </ul>
+        <p className="mt-3 text-[12px] leading-relaxed text-muted">
+          Each page, form and gated route goes to the planner in one pass, so it can write flows that cross
+          between them rather than one page at a time.
+        </p>
+      </div>
     </div>
+  );
+}
+
+/**
+ * The rows the flows will land in, one per flow the planner is allowed to write.
+ *
+ * Shaped like the real list underneath - title line, id line, status - so the panel does not
+ * reflow when the model returns, and counted from the run's own flow budget so the wait shows
+ * how much plan is coming rather than a guess.
+ */
+function FlowSkeleton({ count }: { count: number }) {
+  return (
+    <ol aria-hidden="true" className="min-h-0 flex-1">
+      {Array.from({ length: count }, (_, i) => (
+        <li key={i} className="flex items-start gap-2.5 border-b border-line px-3 py-2.5 last:border-0">
+          <span className="mt-1 size-3 shrink-0 animate-shimmer rounded-full bg-raised" style={{ animationDelay: `${i * 180}ms` }} />
+          <span className="min-w-0 flex-1 space-y-1.5">
+            <span className="block h-2.5 animate-shimmer rounded-chip bg-raised" style={{ animationDelay: `${i * 180 + 60}ms`, width: `${88 - i * 11}%` }} />
+            <span className="block h-2 w-1/3 animate-shimmer rounded-chip bg-raised" style={{ animationDelay: `${i * 180 + 120}ms` }} />
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -119,12 +182,15 @@ export function PlannerProgress({ progress, liveSrc }: { progress: Progress; liv
   const elapsed = useElapsed(progress.startedAt);
   const drafting = progress.phase === "drafting";
   const decided = progress.kept + progress.dropped;
+  // A run recorded before the planner reported its flow budget replays with maxFlows 0; three
+  // is the orchestrator's own default and the right number of rows to promise in that case.
+  const budget = progress.maxFlows || 3;
 
   return (
     <section className="rounded-card border border-line bg-surface p-4">
       <h2 className="flex items-center gap-2 text-[14px] font-medium tracking-[0.2px] text-fg">
         <Icon name="target" size={15} className="text-muted" />
-        {drafting ? "qa-pilot is writing your test plan" : "qa-pilot is validating the plan on your app"}
+        {drafting ? "AEGIS is writing your test plan" : "AEGIS is validating the plan on your app"}
         <span className="ml-auto font-mono text-[12px] font-normal text-muted">{elapsed}</span>
       </h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted">
@@ -150,35 +216,42 @@ export function PlannerProgress({ progress, liveSrc }: { progress: Progress; liv
           <li key={s.label} className="flex items-center gap-2">
             {i > 0 && <Icon name="chevronRight" size={11} className="text-subtle" />}
             <span className={`flex items-center gap-1.5 ${s.live ? "text-fg" : s.done ? "text-muted" : "text-subtle"}`}>
-              <Icon
-                name={s.done ? "check" : "dashedCircle"} size={11}
-                className={s.done ? "text-pass" : s.live ? "animate-spin [animation-duration:2.4s]" : ""}
-              />
+              {s.live ? <Spinner size={12} /> : <Icon name={s.done ? "check" : "dashedCircle"} size={11} className={s.done ? "text-pass" : ""} />}
               {s.label}
             </span>
           </li>
         ))}
       </ol>
 
-      {!drafting && progress.flows.length > 0 && (
-        <div className="mt-3.5">
+      {/*
+        One slot, two answers. Drafting has no percentage to report - the model is inside a
+        single call - so it gets an indeterminate sweep; the dry walk counts real flows and
+        gets a real meter. Sharing the slot keeps the panel from jumping when the phase turns.
+      */}
+      <div className="mt-3.5">
+        {drafting ? (
+          <Sweep label={`Writing up to ${budget} ${budget === 1 ? "flow" : "flows"}…`} />
+        ) : progress.flows.length > 0 ? (
           <Meter value={decided} max={progress.flows.length} label={`Flows validated ${decided}/${progress.flows.length}`} showPercent={false} />
-        </div>
-      )}
+        ) : null}
+      </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(17rem,1fr)]">
         {drafting ? <Routes routes={progress.routes} /> : <LiveViewport src={liveSrc} action={progress.action} />}
         <div className="flex min-h-[16rem] flex-col rounded-box border border-line bg-inset">
           <div className="flex items-baseline justify-between border-b border-line px-3 py-2">
             <h3 className="text-[11px] font-medium uppercase tracking-[0.6px] text-subtle">Proposed flows</h3>
-            <span className="font-mono text-[11px] text-subtle">{progress.flows.length || "-"}</span>
+            <span className="font-mono text-[11px] text-subtle">{progress.flows.length ? progress.flows.length : `0/${budget}`}</span>
           </div>
           {progress.flows.length > 0 ? (
             <FlowList flows={progress.flows} />
           ) : (
-            <p className="flex flex-1 items-center justify-center px-6 text-center text-[12.5px] leading-relaxed text-subtle">
-              The flows appear here the moment the planner has written them.
-            </p>
+            <>
+              <FlowSkeleton count={budget} />
+              <p className="border-t border-line px-3 py-2.5 text-center text-[12px] leading-relaxed text-subtle">
+                The flows appear here the moment the planner has written them.
+              </p>
+            </>
           )}
         </div>
       </div>

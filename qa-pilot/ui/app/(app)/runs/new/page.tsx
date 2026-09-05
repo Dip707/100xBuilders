@@ -60,13 +60,13 @@ export default function NewRunPage() {
         <PageHeader
           crumbs={[{ label: "Runs", href: "/" }, { label: "New run" }]}
           title="Start a run"
-          subtitle="Tell qa-pilot what to test, in the form or in the chat. It explores the app, writes a plan, scores the plan for gaps, generates Playwright tests, runs them, and repairs what breaks."
+          subtitle="Tell AEGIS what to test, in the form or in the chat. It explores the app, writes a plan, scores the plan for gaps, generates Playwright tests, runs them, and repairs what breaks."
         />
 
         <div className="mx-auto w-full max-w-[960px] flex-1 space-y-4 px-6 pb-32 pt-5">
           <Card title="Target">
             <CardRow>
-              <Field label="URL" required help="The URL of the app qa-pilot should test.">
+              <Field label="URL" required help="The URL of the app AEGIS should test.">
                 <Flash on={lit("url")}>
                   <Input value={draft.url} onChange={(e) => edit({ url: e.target.value })} placeholder="https://app.example.com" required />
                 </Flash>
@@ -87,7 +87,7 @@ export default function NewRunPage() {
                 <Flash on={lit("requiresSignIn")} className="-m-1 p-1">
                   <Checkbox
                     checked={draft.requiresSignIn} onChange={(v) => edit({ requiresSignIn: v })} label="Require sign in?"
-                    help="Check this if parts of the app are behind a login. qa-pilot signs in with a test account so it can reach those flows. These credentials are used for the run and are never stored."
+                    help="Check this if parts of the app are behind a login. AEGIS signs in with a test account so it can reach those flows. These credentials are used for the run and are never stored."
                   />
                 </Flash>
                 {draft.requiresSignIn && (
@@ -102,7 +102,7 @@ export default function NewRunPage() {
 
           <Card title="Add sources">
             <CardRow>
-              <Field label="Add sources" help="qa-pilot extracts requirements from the document and maps each one onto a planned flow, then reports the ones nothing covers.">
+              <Field label="Add sources" help="AEGIS extracts requirements from the document and maps each one onto a planned flow, then reports the ones nothing covers.">
                 <div className="space-y-3">
                   <Flash on={lit("prd")}>
                     <div className="rounded-box border border-line bg-inset p-4">
@@ -208,7 +208,7 @@ export default function NewRunPage() {
           )}
           <div className="mx-auto flex max-w-[960px] items-center justify-between gap-3">
             <p className="hidden text-[12.5px] text-muted sm:block">
-              {isValidUrl(draft.url) ? "Ready. qa-pilot will explore, plan, generate and run." : "Enter a valid http(s) URL to continue."}
+              {isValidUrl(draft.url) ? "Ready. AEGIS will explore, plan, generate and run." : "Enter a valid http(s) URL to continue."}
             </p>
             <div className="flex flex-1 justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => router.push("/")}>Cancel</Button>

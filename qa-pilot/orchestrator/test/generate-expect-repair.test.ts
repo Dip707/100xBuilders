@@ -41,7 +41,7 @@ describe("generateFlowNode expectation repair", () => {
   it("re-targets an expectation that is false live to the element the LLM picks, once verified", async () => {
     const { bus, state } = fresh("qa-exp-repair-a-");
     runPlaywrightMock.mockResolvedValueOnce(passed());
-    const llm = new FakeLlmClient({ "expect-repair": { role: "heading", name: "Welcome back", reason: "the login page heading is titled Welcome back", confidence: 0.9 } });
+    const llm = new FakeLlmClient({ "expect-repair": { role: "heading", name: "Welcome back", reason: "the login page heading reads Welcome back", confidence: 0.9 } });
     const update = await generateFlowNode(state, { bus, llm, headless: true });
     const src = readFileSync((update.testFiles as string[])[0], "utf8");
     expect(src).toContain("await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();");

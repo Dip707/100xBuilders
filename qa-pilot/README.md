@@ -118,6 +118,8 @@ Ask "why did the coupon test fail?" and it answers from the run's results, the c
 Every chat is saved under a title taken from the first request, so the dropdown reads like a list of things you asked for.
 A run's login is never stored, so after the API restarts a rerun of signed-in tests asks for the target app's account in masked inputs; the values travel only with that request.
 *Ask copilot* on a run header opens a chat scoped to that run.
+The run picker under the message box names the run the chat is on and moves it to another one; a chat already under way is repointed on the server too, so the run survives a reload.
+A rerun that was decided but not yet executed is dropped when the chat leaves its run, rather than firing later against a run nobody was looking at.
 
 When a rerun still fails and the pipeline's classifier called that failure an app defect, the row offers to file it.
 Connect Linear or Jira once under Settings (the user menu): the tab goes to the tracker's own sign-in through Composio and comes back, you pick the team or project when there is more than one, and the row reads *Raise in Linear* or *Raise in Jira*.

@@ -216,6 +216,10 @@ export const createCopilotChat = (scope: ChatScope) =>
 
 export const listCopilotChats = () => apiFetch<{ chats: ChatSummary[] }>("/copilot/chats").then((r) => r.chats);
 
+/** Repoints an existing chat at another run; `null` clears the pin back to the most recent finished run. */
+export const setCopilotScope = (id: string, runId: string | null) =>
+  apiFetch<{ scope: ChatScope }>(`/copilot/chats/${encodeURIComponent(id)}/scope`, { method: "POST", body: JSON.stringify({ runId }) }).then((r) => r.scope);
+
 /** One copilot turn: the decision, not the execution. */
 export const sendCopilotMessage = (id: string, text: string) =>
   apiFetch<CopilotTurn>(`/copilot/chats/${encodeURIComponent(id)}/messages`, { method: "POST", body: JSON.stringify({ text }) });
@@ -237,6 +241,8 @@ export async function fetchArtifact(runId: string, relPath: string): Promise<str
 }
 
 export const reportUrl = (runId: string) => `${API}/report/${encodeURIComponent(runId)}`;
+/** Same report, but with content-disposition: attachment so the browser saves it instead of opening it inline. */
+export const reportDownloadUrl = (runId: string) => `${reportUrl(runId)}?download=1`;
 
 /** The run's generated tests as a standalone Playwright project, ready to run outside qa-pilot. */
 export const suiteUrl = (runId: string) => `${API}/runs/${encodeURIComponent(runId)}/suite.zip`;

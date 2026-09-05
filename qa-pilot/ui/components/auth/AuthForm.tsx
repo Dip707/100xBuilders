@@ -86,7 +86,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           <div className="mb-8 space-y-1.5">
             <h1 className="text-[24px] font-medium tracking-[0.2px] text-fg">{copy.title}</h1>
             <p className="text-[13.5px] text-muted">
-              {mode === "login" ? "Welcome back." : "Runs are scoped to your account."} qa-pilot autonomous test orchestration.
+              {mode === "login" ? "Welcome back." : "Runs are scoped to your account."} AEGIS autonomous test orchestration.
             </p>
           </div>
 

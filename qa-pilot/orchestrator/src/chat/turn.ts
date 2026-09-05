@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { LlmClient } from "../llm/client.js";
 import type { ChatMessage, RunDraft } from "../store/types.js";
+import { DEFAULT_MAX_FLOWS } from "../state.js";
 
 /**
  * How many transcript messages the model sees. The draft carries the accumulated state, so
@@ -143,7 +144,7 @@ export function turnInput(args: { draft: RunDraft; messages: ChatMessage[]; need
     `prd: ${prdLine(d)}`,
     `requiresSignIn: ${d.requiresSignIn ?? false}`,
     `reviewPlan: ${d.reviewPlan ?? false}`,
-    `maxFlows: ${d.maxFlows ?? 12}`,
+    `maxFlows: ${d.maxFlows ?? DEFAULT_MAX_FLOWS}`,
     `budget: ${d.budget?.maxLlmCalls ?? 200} LLM calls, ${d.budget?.maxMinutes ?? 40} minutes`,
     "",
     "CONVERSATION",

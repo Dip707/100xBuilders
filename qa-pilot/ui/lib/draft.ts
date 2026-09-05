@@ -19,10 +19,21 @@ export type RunDraft = {
   budget: { maxLlmCalls: number; maxMinutes: number };
 };
 
+/**
+ * How many flows a new run plans by default. Mirrors the orchestrator's own default
+ * (`DEFAULT_MAX_FLOWS` in `state.ts`), which is what a run actually uses when the form
+ * does not send one; the two are kept in step by hand because the UI and the orchestrator
+ * share no package.
+ *
+ * Three, not a dozen: the plan is written in one LLM call whose length scales with the
+ * number of flows, and it is the longest wait in a run.
+ */
+export const DEFAULT_MAX_FLOWS = 3;
+
 export const DEFAULT_DRAFT: RunDraft = {
   url: "", intent: "", prdText: "", prdName: "",
   requiresSignIn: false, username: "", password: "",
-  reviewPlan: false, maxFlows: 12, budget: { maxLlmCalls: 200, maxMinutes: 40 },
+  reviewPlan: false, maxFlows: DEFAULT_MAX_FLOWS, budget: { maxLlmCalls: 200, maxMinutes: 40 },
 };
 
 /** The fields a chat turn may write. Mirrors the server's patch shape. */

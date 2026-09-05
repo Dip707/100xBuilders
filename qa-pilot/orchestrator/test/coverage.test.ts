@@ -176,6 +176,18 @@ describe("afterCoverage", () => {
     expect(decisions).toContain("missing_error_state");
   });
 
+  it("returns generate when the plan is already at its flow limit, however low the score", () => {
+    const bus = new EventBus("r", mkdtempSync(join(tmpdir(), "qa-coverage-")) + "/r/");
+    // Every gap asks for a flow the plan has no room for, so another minute-long plan call
+    // would hand back the same three flows with a different set of gaps open.
+    const state = {
+      ...initialState({ runId: "r", url: "http://x", maxFlows: 2 }),
+      planIterations: 1,
+      plan: [mk("a-001", "happy", "Log in"), mk("b-001", "happy", "Check out")],
+      coverage: { score: 0.1, gaps: [{ kind: "missing_authz", target: "/orders", suggest: "add authz flow" }], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} } as CoverageVerdict,
+    };
+    expect(afterCoverage(state, { bus, llm: new FakeLlmClient({}), headless: true })).toBe("generate");
+  });
   it("returns plan and records a decision when score is below threshold and iterations remain", () => {
     const outDir = mkdtempSync(join(tmpdir(), "qa-coverage-")) + "/";
     process.env.QA_PILOT_OUTPUT = outDir;   // own the output dir: afterCoverage reads coverage.json history
@@ -331,5 +343,28 @@ describe("replanStalled", () => {
   });
   it("lets a loop that is still making progress continue", () => {
     expect(replanStalled([0.4, 0.6])).toBe(false);
+  });
+});
+
+describe("scoreCoverage form applicability", () => {
+  /** The add-to-cart form on mini-shop's product pages: one optional quantity box. */
+  const cartAdd = (path: string) => ({
+    url: `http://x${path}`, path, title: "Product", gated: false, snapshot: "", buttons: [], links: [],
+    forms: [{ id: `${path}#0`, submit: { role: "button", name: "Add to cart" }, fields: [{ role: "spinbutton", name: "Quantity", type: "number", required: false }] }],
+  });
+  const shop = (paths: string[]): SiteMap => ({
+    origin: "http://x", loginPath: null, loginSteps: [],
+    pages: Object.fromEntries(paths.map((p) => [p, cartAdd(p)])),
+  });
+
+  it("asks for no empty-submit case on a form that requires nothing", () => {
+    const v = scoreCoverage(shop(["/products/p1"]), [mk("c1", "happy", "Add to cart", "/products/p1")], {});
+    expect(v.gaps.map((g) => g.kind)).not.toContain("missing_empty_submit");
+  });
+
+  it("counts one form shared across product pages once, and any page covers it", () => {
+    const v = scoreCoverage(shop(["/products/p1", "/products/p2", "/products/p3"]), [mk("c1", "happy", "Add to cart", "/products/p2")], {});
+    expect(v.gaps.filter((g) => g.kind === "missing_happy")).toHaveLength(0);
+    expect(v.gaps.filter((g) => g.kind === "missing_negative")).toHaveLength(1);
   });
 });

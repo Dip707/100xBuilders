@@ -87,26 +87,41 @@ export function findAll(value: unknown, matches: (o: Record<string, unknown>) =>
 }
 
 const str = (o: Record<string, unknown>, k: string): string | undefined => (typeof o[k] === "string" && (o[k] as string).length > 0 ? (o[k] as string) : undefined);
-const isTeam = (o: Record<string, unknown>) => str(o, "id") !== undefined && str(o, "name") !== undefined && str(o, "key") !== undefined;
+/**
+ * Composio's team listing answers `teams: [{ id, name, members, projects }]` with no key, and
+ * each member has an id and a name of its own; the email is what tells a person from a team.
+ */
+const isTeam = (o: Record<string, unknown>) => str(o, "id") !== undefined && str(o, "name") !== undefined && !("email" in o);
 const isProject = (o: Record<string, unknown>) => str(o, "key") !== undefined && str(o, "name") !== undefined && !("id" in o && "email" in o);
 
 export function extractDestinations(provider: TrackerProvider, data: unknown): Destination[] {
   if (provider === "linear") {
-    return findAll(data, isTeam).map((t) => ({ id: str(t, "id")!, label: `${str(t, "name")} (${str(t, "key")})` }));
+    return findAll(data, isTeam).map((t) => ({ id: str(t, "id")!, label: str(t, "key") ? `${str(t, "name")} (${str(t, "key")})` : str(t, "name")! }));
   }
   return findAll(data, isProject).map((p) => ({ id: str(p, "key")!, label: `${str(p, "name")} (${str(p, "key")})` }));
 }
 
+/**
+ * Composio's create tools answer in their own shapes, not the trackers': Linear gives
+ * `{ id, ticket_url, issue_title }` (the ENG-42 identifier is only in the URL), Jira gives
+ * `{ id, key, self, browser_url }`. Older or raw shapes with `identifier` or `url` are read too.
+ */
 export function extractIssue(provider: TrackerProvider, data: unknown): { key: string; url: string } | undefined {
   if (provider === "linear") {
-    const issue = findFirst(data, (o) => str(o, "identifier") !== undefined);
+    const issue = findFirst(data, (o) => str(o, "identifier") !== undefined || str(o, "ticket_url") !== undefined || str(o, "url") !== undefined);
     if (!issue) return undefined;
-    const key = str(issue, "identifier")!;
-    return { key, url: str(issue, "url") ?? `https://linear.app/issue/${encodeURIComponent(key)}` };
+    const url = str(issue, "ticket_url") ?? str(issue, "url");
+    // https://linear.app/<workspace>/issue/<KEY>/<slug>
+    const fromUrl = url ? /\/issue\/([A-Za-z0-9]+-\d+)(?:[/?#]|$)/.exec(url)?.[1] : undefined;
+    const key = str(issue, "identifier") ?? fromUrl ?? str(issue, "id");
+    if (!key) return undefined;
+    return { key, url: url ?? `https://linear.app/issue/${encodeURIComponent(key)}` };
   }
-  const issue = findFirst(data, (o) => str(o, "key") !== undefined && (str(o, "self") !== undefined || str(o, "id") !== undefined));
+  const issue = findFirst(data, (o) => str(o, "key") !== undefined && (str(o, "browser_url") !== undefined || str(o, "self") !== undefined || str(o, "id") !== undefined));
   if (!issue) return undefined;
   const key = str(issue, "key")!;
+  const browser = str(issue, "browser_url");
+  if (browser) return { key, url: browser };
   const self = str(issue, "self");
   let url = self ?? "";
   if (self) {

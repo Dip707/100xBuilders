@@ -78,7 +78,7 @@ export function LogoLockup({ tone = "accent", className = "" }: { tone?: "accent
     <span className={`flex items-center gap-2.5 ${className}`}>
       <LogoTile size={28} tone={tone} />
       <span className={`text-sm font-semibold tracking-[0.2px] ${tone === "accent" ? "text-fg" : "text-white"}`}>
-        qa-pilot
+        AEGIS
       </span>
     </span>
   );

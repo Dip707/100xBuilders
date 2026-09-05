@@ -7,12 +7,13 @@ import { Icon, Wallpaper } from "@/components/ui";
 import { ChatsMenu } from "@/components/chat/ChatsMenu";
 import { Composer } from "@/components/chat/Composer";
 import { CopilotTranscript } from "@/components/copilot/CopilotTranscript";
+import { RunSelect } from "@/components/copilot/RunSelect";
 import {
-  createCopilotChat, deleteChat as deleteChatApi, executeCopilot, getChat, getIntegration, listCopilotChats, listTickets, raiseTicket, sendCopilotMessage,
-  type Chat, type ChatMessage, type ChatScope, type ChatSummary, type IntegrationPublic, type RerunPlanData, type TicketRecord,
+  createCopilotChat, deleteChat as deleteChatApi, executeCopilot, getChat, getIntegration, listCopilotChats, listRuns, listTickets, raiseTicket, sendCopilotMessage, setCopilotScope,
+  type Chat, type ChatMessage, type ChatSummary, type IntegrationPublic, type RerunPlanData, type RunRecord, type TicketRecord,
 } from "@/lib/api";
 import { useRunEvents } from "@/lib/events";
-import { isSettled, liveStatuses, pendingPlan } from "@/lib/copilot";
+import { isSettled, liveStatuses, pendingPlan, selectableRuns } from "@/lib/copilot";
 
 const SUGGESTIONS = [
   { icon: "refresh" as const, text: "Rerun everything that failed in the last run" },
@@ -29,10 +30,6 @@ const EMPTY_CREDENTIALS = { username: "", password: "" };
  */
 export default function CopilotPage() {
   const params = useSearchParams();
-  const scopeFromUrl = useMemo<ChatScope>(() => {
-    const run = params.get("run");
-    return run ? { runId: run } : {};
-  }, [params]);
 
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -44,8 +41,14 @@ export default function CopilotPage() {
   const [needsCredentials, setNeedsCredentials] = useState(false);
   const [credentials, setCredentials] = useState(EMPTY_CREDENTIALS);
   const [running, setRunning] = useState<{ plan: RerunPlanData; at: string } | null>(null);
-  /** The run the chat has settled on, once a turn has resolved one. */
-  const [scopeRunId, setScopeRunId] = useState<string | null>(null);
+  /**
+   * The run the chat is pinned to: picked in the run select, carried in by `?run=`, or the one
+   * a turn settled on. Null means the copilot works from whichever run finished most recently.
+   */
+  const [scopeRunId, setScopeRunId] = useState<string | null>(() => params.get("run"));
+  /** Every run on the account, for the picker; null while they load. */
+  const [runs, setRuns] = useState<RunRecord[] | null>(null);
+  const [runMenuOpen, setRunMenuOpen] = useState(false);
   /** The user's tracker connection: undefined until the first answer, so no row offers "Connect" prematurely. */
   const [integration, setIntegration] = useState<IntegrationPublic | null | undefined>(undefined);
   /** Tickets already filed, by run id then test id. A run is fetched once, the first time a result for it is shown. */
@@ -54,6 +57,7 @@ export default function CopilotPage() {
 
   useEffect(() => {
     getIntegration().then(setIntegration).catch(() => setIntegration(null));
+    listRuns().then((all) => setRuns(selectableRuns(all))).catch(() => setRuns([]));
   }, []);
 
   // Every run a stored result bubble refers to, so a reopened chat shows the same issue links.
@@ -139,7 +143,7 @@ export default function CopilotPage() {
     const at = new Date().toISOString();
     setMessages((prev) => prev.concat({ role: "user", text: trimmed, at }));
     try {
-      const id = chatId ?? (await createCopilotChat(scopeFromUrl)).id;
+      const id = chatId ?? (await createCopilotChat(scopeRunId ? { runId: scopeRunId } : {})).id;
       if (!chatId) setChatId(id);
       const turn = await sendCopilotMessage(id, trimmed);
       if (turn.runId) setScopeRunId(turn.runId);
@@ -166,6 +170,29 @@ export default function CopilotPage() {
     void run(chatId, pending.plan, pending.at, credentials);
   }
 
+  /**
+   * Repoints the copilot. A chat that exists is repointed on the server too, so the run
+   * survives a reload; one not yet created carries the pick into its scope when it is.
+   * The server drops any rerun that was decided for the run being left, so the credentials
+   * it was waiting for are no longer wanted either.
+   */
+  async function chooseRun(next: string | null) {
+    if (next === scopeRunId) return;
+    const previous = scopeRunId;
+    setScopeRunId(next);
+    setError(null);
+    setNeedsCredentials(false);
+    setCredentials(EMPTY_CREDENTIALS);
+    if (!chatId) return;
+    try {
+      await setCopilotScope(chatId, next);
+      refreshChats();
+    } catch (err) {
+      setScopeRunId(previous);
+      setError((err as Error).message);
+    }
+  }
+
   async function open_(id: string) {
     try {
       adopt(await getChat(id));
@@ -182,7 +209,7 @@ export default function CopilotPage() {
     setNeedsCredentials(false);
     setCredentials(EMPTY_CREDENTIALS);
     setRunning(null);
-    setScopeRunId(null);
+    // The picked run is deliberately kept: a new chat starts on the run the person was on.
   }
 
   async function remove(id: string) {
@@ -219,7 +246,7 @@ export default function CopilotPage() {
         {messages.length === 0 && !busy ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
             <p className="text-[13.5px] text-muted">
-              {scopeFromUrl.runId ? <>Scoped to run <span className="font-mono text-fg">{scopeFromUrl.runId}</span>.</> : "Scoped to your most recent finished run unless you name one."}
+              {scopeRunId ? <>Scoped to run <span className="font-mono text-fg">{scopeRunId}</span>.</> : "Scoped to your most recent finished run unless you name one."}
             </p>
             <div className="flex flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
@@ -256,6 +283,15 @@ export default function CopilotPage() {
             placeholder={running ? "Waiting for the rerun to finish" : "Rerun the tests that failed last time, especially checkout"}
             ariaLabel="Message the copilot"
           />
+          {/* Under the box, where it reads as part of the message being composed: the run
+              everything in this chat is about, and the one control that changes it. */}
+          <div className="mt-2 flex items-center gap-2">
+            <RunSelect
+              runs={runs} value={scopeRunId} open={runMenuOpen} onOpen={setRunMenuOpen}
+              onSelect={(id) => void chooseRun(id)} disabled={busy || running !== null}
+            />
+            <span className="hidden text-[12px] text-subtle sm:inline">The copilot answers about this run, and reruns its tests.</span>
+          </div>
         </div>
       </div>
     </div>

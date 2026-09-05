@@ -11,6 +11,9 @@ describe("IntegrationsCard", () => {
     const html = renderToStaticMarkup(<IntegrationsCard integration={null} {...handlers} />);
     expect(html).toContain("Connect Linear");
     expect(html).toContain("Connect Jira");
+    // Each button carries the tracker's own mark, not a generic icon.
+    expect(html).toContain('aria-label="Linear"');
+    expect(html).toContain('aria-label="Jira"');
     expect(html).toContain("never sees a password or an API key");
     expect(html).not.toContain('type="password"');
     expect(html).not.toContain("Disconnect");
@@ -32,6 +35,7 @@ describe("IntegrationsCard", () => {
   it("shows the connection, the destination, Disconnect and the way back once complete", () => {
     const html = renderToStaticMarkup(<IntegrationsCard integration={ACTIVE} returnTo="/copilot?chat=abc" {...handlers} />);
     expect(html).toContain("Linear · Engineering (ENG)");
+    expect(html).toContain('aria-label="Linear"');
     expect(html).toContain("Engineering (ENG) in Linear");
     expect(html).toContain("Disconnect");
     expect(html).toContain("Back to the copilot");

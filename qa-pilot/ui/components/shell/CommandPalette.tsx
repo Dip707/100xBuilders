@@ -171,7 +171,7 @@ export function CommandPalette() {
         </div>
 
         <div className="flex items-center justify-between border-t border-line px-4 py-2 text-[11px] text-subtle">
-          <span className="flex items-center gap-1.5"><Icon name="command" size={12} /> qa-pilot</span>
+          <span className="flex items-center gap-1.5"><Icon name="command" size={12} /> AEGIS</span>
           <span className="flex items-center gap-2">
             <span className="flex items-center gap-1"><Keycap>↑</Keycap><Keycap>↓</Keycap> navigate</span>
             <span className="flex items-center gap-1"><Keycap>↵</Keycap> open</span>

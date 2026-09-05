@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Button, Card, Icon, Spinner } from "@/components/ui";
+import { Button, Card, Icon, Spinner, TrackerLogo } from "@/components/ui";
 import type { IntegrationPublic, TrackerDestination, TrackerProvider } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 
@@ -69,7 +69,7 @@ export function IntegrationsCard({
     return (
       <Card title="Integrations" actions={<Button variant="outline" size="sm" onClick={() => void act("disconnect", onDisconnect)} disabled={busy !== null}>Disconnect</Button>}>
         <div className="flex items-center gap-3 py-4">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-chip bg-inset text-body"><Icon name="bug" size={15} /></span>
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-chip bg-inset"><TrackerLogo name={integration.provider} size={16} /></span>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-fg">{integration.label}</p>
             <p className="text-[12px] text-muted">Connected {relativeTime(integration.connectedAt)}. Defects the copilot files go to {integration.destination.label} in {PROVIDER_NAME[integration.provider]}.</p>
@@ -88,8 +88,8 @@ export function IntegrationsCard({
   if (integration?.status === "active") {
     return (
       <Card title="Integrations" actions={<Button variant="outline" size="sm" onClick={() => void act("disconnect", onDisconnect)} disabled={busy !== null}>Disconnect</Button>}>
-        <p className="py-4 text-[13px] leading-relaxed text-muted">
-          {PROVIDER_NAME[integration.provider]} is connected. Pick the {integration.provider === "linear" ? "team" : "project"} the copilot should file defects in.
+        <p className="flex items-center gap-2 py-4 text-[13px] leading-relaxed text-muted">
+          <TrackerLogo name={integration.provider} size={14} /> {PROVIDER_NAME[integration.provider]} is connected. Pick the {integration.provider === "linear" ? "team" : "project"} the copilot should file defects in.
         </p>
         <div className="flex items-center gap-3 pb-4">
           {destinations === null ? (
@@ -118,15 +118,15 @@ export function IntegrationsCard({
   return (
     <Card title="Integrations">
       <p className="py-4 text-[13px] leading-relaxed text-muted">
-        Connect a tracker and the copilot can file a ticket for any failure the classifier called an app defect. Connecting opens the tracker&apos;s own sign-in and brings you back here; qa-pilot never sees a password or an API key.
+        Connect a tracker and the copilot can file a ticket for any failure the classifier called an app defect. Connecting opens the tracker&apos;s own sign-in and brings you back here; AEGIS never sees a password or an API key.
       </p>
       {integration?.status === "pending" && (
         <p className="pb-4 text-[13px] text-muted">The last attempt to connect {PROVIDER_NAME[integration.provider]} did not finish. Try again.</p>
       )}
       <div className="flex flex-wrap items-center gap-2 pb-4">
         {(["linear", "jira"] as const).map((provider) => (
-          <Button key={provider} size="sm" variant={provider === "linear" ? "primary" : "outline"} onClick={() => void act(provider, () => onConnect(provider))} disabled={busy !== null}>
-            {busy === provider ? <><Spinner size={11} /> Opening {PROVIDER_NAME[provider]}</> : <>Connect {PROVIDER_NAME[provider]}</>}
+          <Button key={provider} size="sm" variant="outline" onClick={() => void act(provider, () => onConnect(provider))} disabled={busy !== null}>
+            {busy === provider ? <><Spinner size={11} /> Opening {PROVIDER_NAME[provider]}</> : <><TrackerLogo name={provider} size={14} /> Connect {PROVIDER_NAME[provider]}</>}
           </Button>
         ))}
       </div>

@@ -53,6 +53,8 @@ const ChatMessageSchema = z.object({
 
 const CopilotScopeSchema = z.object({ url: z.string().optional(), runId: z.string().optional() });
 const CopilotMessageSchema = z.object({ text: z.string() });
+/** Repointing an existing chat: `null` clears the pin rather than naming a run. */
+const CopilotChatScopeSchema = z.object({ runId: z.string().nullable().optional() });
 const CopilotExecuteSchema = z.object({ credentials: CredentialsSchema.optional() });
 
 /** Chats with an execute in flight. One rerun per chat at a time; a second request answers 409. */
@@ -325,6 +327,35 @@ export function createApi(opts: {
 
   app.get("/copilot/chats", async (c) => {
     return c.json({ chats: await store.listChats(c.get("user").id, { kind: "copilot" }) });
+  });
+
+  /**
+   * Repoints a chat at a different run. A turn pins the chat to whatever it resolved, so this
+   * is how a person moves the conversation onto the run they meant without starting a new one.
+   * `runId: null` clears the pin and the chat falls back to the most recent finished run.
+   */
+  app.post("/copilot/chats/:chatId/scope", async (c) => {
+    const chatId = c.req.param("chatId");
+    const userId = c.get("user").id;
+    const chat = await ownedCopilotChat(chatId, userId);
+    if (!chat) return c.json({ error: "not found" }, 404);
+
+    const parsed = CopilotChatScopeSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+
+    const scope: { url?: string; runId?: string } = {};
+    if (parsed.data.runId) {
+      // As on creation, a run the caller cannot see is refused rather than silently ignored.
+      const run = await ownedRun(parsed.data.runId, userId);
+      if (!run) return c.json({ error: "not found" }, 404);
+      scope.runId = run.id;
+      scope.url = run.url;
+    }
+    // A rerun decided but never executed belongs to the run that was pinned when it was
+    // decided, so moving the chat elsewhere drops it rather than leaving it to fire later.
+    const stale = chat.pending !== undefined && chat.pending.runId !== scope.runId;
+    await store.appendChatTurn(chatId, [], { scope, ...(stale ? { pending: null } : {}) });
+    return c.json({ scope });
   });
 
   app.post("/copilot/chats/:chatId/messages", async (c) => {
@@ -777,7 +808,14 @@ export function createApi(opts: {
     if (!(await ownedRun(runId, c.get("user").id))) return c.text("not found", 404);
     const path = outputDir(runId) + "report.html";
     if (!existsSync(path)) return c.text("report not ready", 404);
-    return c.html(readFileSync(path, "utf8"));
+    const html = readFileSync(path, "utf8");
+    // Same file either way: the UI iframes and opens this inline by default; ?download=1 (the
+    // UI's "Download report" button) adds content-disposition so the browser saves it instead -
+    // the html anchor attribute alone can't force that, since the API is a different origin.
+    if (c.req.query("download")) {
+      return c.body(html, 200, { "content-type": "text/html; charset=utf-8", "content-disposition": `attachment; filename="${runId}-report.html"` });
+    }
+    return c.html(html);
   });
 
   app.get("/runs/:runId/files/*", async (c) => {

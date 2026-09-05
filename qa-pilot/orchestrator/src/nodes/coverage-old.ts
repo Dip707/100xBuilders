@@ -1,7 +1,6 @@
 import { z } from "zod";
-import type { CoverageVerdict, Flow, FormInfo, RunState, RunUpdate, SiteMap } from "../state.js";
+import type { CoverageVerdict, Flow, RunState, RunUpdate, SiteMap } from "../state.js";
 import { readOutput, writeOutput } from "../output.js";
-import { nameSimilarity } from "../browser/snapshot.js";
 import { now, type NodeDeps } from "./deps.js";
 
 export const PrdRequirementsSchema = z.object({ requirements: z.array(z.string()) });
@@ -9,46 +8,6 @@ export const PrdMatrixSchema = z.object({ matrix: z.array(z.object({ requirement
 
 export const COVERAGE_THRESHOLD = 0.75;
 export const MAX_PLAN_ITERATIONS = 3;
-/** How much a re-plan must move the score to be worth another planning call. */
-export const STALL_EPSILON = 0.01;
-
-/**
- * Whether re-planning has stopped paying for itself.
- *
- * The gap loop assumes each iteration tells the planner something it did not know. When two
- * consecutive iterations land on the same score, that assumption has failed: the planner has
- * converged on what the site map lets it see, and further iterations spend a `plan` call - the
- * most expensive one in the pipeline - to reproduce the same gaps. Stopping early and carrying
- * the unclosed gaps into the report is both cheaper and more honest than grinding to
- * MAX_PLAN_ITERATIONS and presenting the result as if the loop had finished its work.
- */
-export function replanStalled(scores: number[]): boolean {
-  if (scores.length < 2) return false;
-  return scores[scores.length - 1] - scores[scores.length - 2] <= STALL_EPSILON;
-}
-
-/**
- * Everything a flow says about itself: its title, the elements its steps touch, and what it
- * asserts. Intent coverage used to look only at titles, which scores a flow named "Place order"
- * as no coverage at all for the intent "focus on checkout" even though every one of its steps
- * runs through /checkout.
- */
-function flowText(f: Flow): string {
-  return [
-    f.title,
-    ...f.steps.map((s) => `${s.name ?? ""} ${s.target ?? ""}`),
-    ...f.expected.map((e) => `${e.name ?? ""} ${e.text_contains ?? ""} ${e.value ?? ""}`),
-  ].join(" ").toLowerCase();
-}
-
-/** A scoping word counts as covered by a substring hit, or by a near-miss on any single token. */
-function intentCovered(word: string, flows: Flow[]): boolean {
-  return flows.some((f) => {
-    const text = flowText(f);
-    if (text.includes(word)) return true;
-    return text.split(/[^a-z0-9]+/).some((tok) => tok.length > 3 && nameSimilarity(tok, word) >= 0.8);
-  });
-}
 
 type Gap = CoverageVerdict["gaps"][number];
 
@@ -63,19 +22,6 @@ const INTENT_FILLER = new Set(["focus", "with", "and", "the", "on", "cover", "co
 /** An empty-submit flow says so in its title, as the planner prompt requires. "Missing" and
  *  "required" are not enough: "rejects checkout when the postal code is missing" leaves one
  *  field out and is the form's negative case, not its empty case. */
-/** Field types carrying a format the user can get wrong. A bare text box has no wrong answer. */
-const CONSTRAINED_TYPES = new Set(["email", "password", "number", "tel", "url", "date"]);
-/** A form is worth a negative case only if some field can hold something invalid. A lone
- *  optional text box - a coupon code, a search term - cannot be filled in wrongly, and
- *  demanding a negative case for it asks the planner for a test that cannot be written. */
-const canBeInvalid = (form: FormInfo) => form.fields.some((f) => f.required || CONSTRAINED_TYPES.has(f.type));
-/** A form is worth an empty-submit case only if it requires something. Submitting a form whose
- *  fields are all optional succeeds; there is no validation for the test to assert on. */
-const canBeEmpty = (form: FormInfo) => form.fields.some((f) => f.required);
-/** The same fields under the same button are the same form wherever it appears. */
-const formSignature = (form: FormInfo) =>
-  JSON.stringify([form.submit?.name ?? "", form.fields.map((f) => `${f.name}|${f.type}|${f.required}`).sort()]);
-
 const isEmptySubmit = (f: Flow) => /\bempty\b|\bblank\b|no input|without (any |entering |filling )?(input|data|values|fields)|nothing (entered|filled|typed)/i.test(f.title);
 
 export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: string; prdRequirements?: string[]; prdMatrix?: Record<string, string[]> }): CoverageVerdict {
@@ -83,32 +29,21 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
   const checks: Record<string, number> = {};
   const weights: Record<string, number> = {};
 
-  // 1. forms: happy, plus a negative and an empty-submit case where the form admits one.
-  // Forms are grouped by shape first: product pages p1, p2 and p3 each carry the same
-  // add-to-cart form, and a flow that adds p2 exercises the same handler as one that adds
-  // p1. Counting them separately tripled every gap that form had, so an app that merely
-  // lists more than one product scored lower than the same app listing one.
-  const groups = new Map<string, { paths: string[]; form: FormInfo }>();
-  for (const page of Object.values(siteMap.pages))
-    for (const form of page.forms) {
-      const group = groups.get(formSignature(form));
-      if (group) group.paths.push(page.path);
-      else groups.set(formSignature(form), { paths: [page.path], form });
-    }
-  if (groups.size) {
+  // 1. forms: happy + negative + empty submit
+  const forms = Object.values(siteMap.pages).flatMap((p) => p.forms.map((f) => ({ path: p.path, id: f.id })));
+  if (forms.length) {
     let pass = 0;
-    for (const { paths, form } of groups.values()) {
-      const on = flows.filter((f) => paths.some((path) => touches(f, path)));
-      const at = paths[0];
-      const cases: { ok: boolean; kind: Gap["kind"]; suggest: string }[] = [
-        { ok: on.some((f) => f.category === "happy"), kind: "missing_happy", suggest: `submit ${at} form with valid data and verify success` },
-      ];
-      if (canBeInvalid(form)) cases.push({ ok: on.some((f) => f.category === "negative" && !isEmptySubmit(f)), kind: "missing_negative", suggest: `submit ${at} form with invalid data and verify the error` });
-      if (canBeEmpty(form)) cases.push({ ok: on.some((f) => isEmptySubmit(f)), kind: "missing_empty_submit", suggest: `submit ${at} form empty and verify validation` });
-      for (const c of cases) if (!c.ok) gaps.push({ kind: c.kind, target: `form:${at}`, suggest: c.suggest });
-      pass += cases.filter((c) => c.ok).length / cases.length;
+    for (const form of forms) {
+      const on = flows.filter((f) => touches(f, form.path));
+      const happy = on.some((f) => f.category === "happy");
+      const negative = on.some((f) => f.category === "negative" && !isEmptySubmit(f));
+      const empty = on.some((f) => isEmptySubmit(f));
+      if (!happy) gaps.push({ kind: "missing_happy", target: `form:${form.path}`, suggest: `submit ${form.path} form with valid data and verify success` });
+      if (!negative) gaps.push({ kind: "missing_negative", target: `form:${form.path}`, suggest: `submit ${form.path} form with invalid data and verify the error` });
+      if (!empty) gaps.push({ kind: "missing_empty_submit", target: `form:${form.path}`, suggest: `submit ${form.path} form empty and verify validation` });
+      pass += [happy, negative, empty].filter(Boolean).length / 3;
     }
-    checks.forms = pass / groups.size;
+    checks.forms = pass / forms.length;
     weights.forms = 0.2;
   }
 
@@ -141,10 +76,10 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
   if (opts.intent) {
     const words = [...new Set(opts.intent.toLowerCase().split(/[^a-z0-9]+/))].filter((w) => w.length > 3 && !INTENT_FILLER.has(w));
     if (words.length) {
-      const hit = words.filter((w) => intentCovered(w, flows));
+      const hit = words.filter((w) => flows.some((f) => f.title.toLowerCase().includes(w)));
       checks.intent = hit.length / words.length;
       weights.intent = 0.1;
-      for (const w of words) if (!hit.includes(w)) gaps.push({ kind: "intent_uncovered", target: w, suggest: `no flow touches "${w}" in its title, steps or assertions; add one` });
+      for (const w of words) if (!hit.includes(w)) gaps.push({ kind: "intent_uncovered", target: w, suggest: `add a flow whose title covers "${w}"` });
     }
   }
 
@@ -168,18 +103,6 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
   checks.mix = Math.min(1, mix / 0.4);
   weights.mix = 0.15;
   if (mix < 0.4) gaps.push({ kind: "category_mix", suggest: `only ${(mix * 100).toFixed(0)}% of flows are negative/edge/error_state; add more` });
-
-  // 7. error states. `mix` counts error_state flows towards a ratio, so a plan can satisfy it
-  // with negative flows alone and never once ask what the app does when a request fails. That
-  // is a different question from invalid input: a validation error is the app working, a failed
-  // request is the app under duress, and only the second reveals whether a failure is surfaced
-  // or silently swallowed. Scored only where there is something to fail - a form to submit.
-  if (groups.size) {
-    const hasErrorState = flows.some((f) => f.category === "error_state");
-    checks.errors = hasErrorState ? 1 : 0;
-    weights.errors = 0.15;
-    if (!hasErrorState) gaps.push({ kind: "missing_error_state", suggest: "no flow exercises a failing request; add one that drives a server or network error and verifies the app surfaces it rather than appearing to succeed" });
-  }
 
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
   const score = Object.entries(checks).reduce((acc, [k, v]) => acc + v * weights[k], 0) / totalWeight;
@@ -238,26 +161,11 @@ export async function coverageNode(state: RunState, deps: NodeDeps): Promise<Run
   return { coverage, llmCalls };
 }
 
-/**
- * Whether a re-plan could close anything. Every open gap asks for a flow the plan does not
- * have, so a plan already holding `maxFlows` flows has nowhere to put one: the planner would
- * spend another minute-long call to hand back the same number of flows with a different set
- * of gaps open. Below the cap it has room, and the gaps tell it what to fill it with.
- */
-const hasRoomToReplan = (state: RunState) => state.plan.length < state.maxFlows;
-
 export function afterCoverage(state: RunState, deps: NodeDeps): "generate" | "plan" {
   const score = state.coverage!.score;
   const gaps = state.coverage!.gaps.map((g) => `${g.kind} ${g.target ?? g.requirement ?? ""}`.trim());
-  const scores = (JSON.parse(readOutput(state.runId, "coverage.json") ?? "[]") as { score: number }[]).map((h) => h.score);
-  const stop =
-    score >= COVERAGE_THRESHOLD ? `coverage ${score} >= ${COVERAGE_THRESHOLD}`
-    : state.planIterations >= MAX_PLAN_ITERATIONS ? `coverage ${score} < ${COVERAGE_THRESHOLD} but ${state.planIterations} iterations reached`
-    : replanStalled(scores) ? `coverage ${score} did not improve on the previous iteration (${scores[scores.length - 2]}); re-planning has converged, carrying ${gaps.length} gap(s) into the report instead of spending another plan call`
-    : !hasRoomToReplan(state) ? `coverage ${score} < ${COVERAGE_THRESHOLD} but the plan is already at its ${state.maxFlows}-flow limit, so a re-plan has no room to close a gap`
-    : null;
-  if (stop) {
-    deps.bus.decision({ node: "evaluate_coverage", reason: stop, evidence: gaps, next: "generate", at: now() });
+  if (score >= COVERAGE_THRESHOLD || state.planIterations >= MAX_PLAN_ITERATIONS) {
+    deps.bus.decision({ node: "evaluate_coverage", reason: score >= COVERAGE_THRESHOLD ? `coverage ${score} >= ${COVERAGE_THRESHOLD}` : `coverage ${score} < ${COVERAGE_THRESHOLD} but ${state.planIterations} iterations reached`, evidence: gaps, next: "generate", at: now() });
     return "generate";
   }
   deps.bus.decision({ node: "evaluate_coverage", reason: `coverage ${score} < ${COVERAGE_THRESHOLD}; re-planning`, evidence: gaps, next: "plan", at: now() });
