@@ -100,6 +100,24 @@ export async function settle(page: Page): Promise<void> {
   await dismissOnboardingOverlay(page);
 }
 
+/**
+ * The wait after a click or press, which needs a different signal than a fresh navigation does.
+ *
+ * `settle`'s selector leg exists because a goto can start from an empty DOM - nothing has
+ * rendered yet, so "some interactive content exists" is real progress. A click starts from a
+ * page that already has all of that: the form just submitted is still on screen, mid-submit, so
+ * the same selector matches instantly and "wins" the race before the async work the click
+ * triggered - a login POST, here - has gone anywhere. `settle` then reports done while the
+ * button still reads "Signing in...", and the very next check reads the old, unchanged page.
+ * Network-idle answers the right question for a click - is whatever request this triggered
+ * still in flight - so it runs alone, for the full budget, with no earlier-satisfied signal to
+ * cut it short.
+ */
+export async function settleAfterAction(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle", { timeout: settleTimeoutMs() }).catch(() => {});
+  await dismissOnboardingOverlay(page);
+}
+
 /** Labels a first-run overlay dismisses itself with, never a label that commits to anything. */
 const DISMISS_LABELS = /^(skip|close|dismiss|got it|no thanks|not now|maybe later|later|×|✕|x)$/i;
 
@@ -383,7 +401,7 @@ export class BrowserToolkit {
       // mid-navigation, so the very next step fires against a page that has not finished
       // authenticating or routing yet. fill/select/check don't carry that risk and keep the
       // cheaper wait, so a plain form fill is never taxed for a problem it doesn't have.
-      if (step.action === "click" || step.action === "press") await settle(page);
+      if (step.action === "click" || step.action === "press") await settleAfterAction(page);
       else await page.waitForLoadState("domcontentloaded").catch(() => {});
       await this.screenshot(page, `${step.action} ${step.name ?? ""}`);
       return r;

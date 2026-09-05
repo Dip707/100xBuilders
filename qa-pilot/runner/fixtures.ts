@@ -36,6 +36,22 @@ async function settle(page: Page): Promise<void> {
   await dismissOnboardingOverlay(page);
 }
 
+/**
+ * The wait after a click or press, which needs a different signal than a fresh navigation does.
+ *
+ * `settle`'s selector leg exists because a goto can start from an empty DOM. A click starts
+ * from a page that already has all of that - the form just submitted is still on screen,
+ * mid-submit ("Signing in...") - so the same selector matches instantly and "wins" the race
+ * before the async work the click triggered has gone anywhere: a login POST, reported settled
+ * while the button still reads "Signing in...", so the very next check reads the stale page.
+ * Network-idle answers the right question for a click, so it runs alone, for the full budget.
+ */
+async function settleAfterAction(page: Page): Promise<void> {
+  const waitForLoadState = rawWaitForLoadState.get(page) ?? page.waitForLoadState.bind(page);
+  await waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+  await dismissOnboardingOverlay(page);
+}
+
 /** Labels a first-run overlay dismisses itself with, never a label that commits to anything. */
 const DISMISS_LABELS = /^(skip|close|dismiss|got it|no thanks|not now|maybe later|later|×|✕|x)$/i;
 
@@ -70,9 +86,9 @@ async function runStep(page: Page, s: Step): Promise<void> {
   const loc = page.getByRole(s.role as never, { name: s.name });
   switch (s.action) {
     case "fill": await loc.fill(s.value ?? ""); break;
-    case "click": await loc.click(); await settle(page); break;
+    case "click": await loc.click(); await settleAfterAction(page); break;
     case "select": await loc.selectOption(s.value ?? ""); break;
-    case "press": await loc.press(s.value ?? "Enter"); await settle(page); break;
+    case "press": await loc.press(s.value ?? "Enter"); await settleAfterAction(page); break;
     case "check": await loc.check(); break;
   }
 }
@@ -120,12 +136,14 @@ export const test = base.extend<{ login: () => Promise<void> }>({
     // `waitForLoadState('networkidle')` to wait out a redirect. Against an app that never
     // goes network-idle that call just hangs until the default timeout and then throws,
     // failing the very test the repair was meant to fix. Redirecting every `'networkidle'`
-    // wait through the same bounded race as `settle()` makes any spec immune to this,
-    // independent of what a future self-repair happens to write.
+    // call through settleAfterAction, not settle, because this call is just as likely to
+    // follow a click as a goto and settle's selector leg is wrong for that case: it matches
+    // whatever the click's own page already had on it - a submit form still reading "Signing
+    // in..." - and resolves before the async work the click triggered goes anywhere.
     const originalWaitForLoadState = page.waitForLoadState.bind(page);
     rawWaitForLoadState.set(page, originalWaitForLoadState);
     page.waitForLoadState = (async (state?: Parameters<typeof originalWaitForLoadState>[0], options?: { timeout?: number }) => {
-      if (state === "networkidle") return settle(page);
+      if (state === "networkidle") return settleAfterAction(page);
       return originalWaitForLoadState(state, options);
     }) as typeof page.waitForLoadState;
 
