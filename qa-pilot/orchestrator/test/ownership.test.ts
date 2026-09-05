@@ -140,7 +140,9 @@ describe("run ownership", () => {
     const res = await app.request(`${ORIGIN}/health`);
     expect(res.status).toBe(503);
     const body = await res.json();
-    expect(Object.keys(body)).toEqual(["ok", "mongo"]);
+    expect(Object.keys(body)).toEqual(["ok", "store", "mongo"]);
+    // The point of the test: whatever the shape grows to, none of it may carry the host.
+    expect(JSON.stringify(body)).not.toContain("10.0.0.5");
   });
 
   describe("isValidRunId guards a run the caller genuinely owns", () => {
