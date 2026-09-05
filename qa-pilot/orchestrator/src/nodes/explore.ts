@@ -44,39 +44,90 @@ async function collectLinks(page: Page): Promise<Link[]> {
   return page.locator("a[href]").evaluateAll((as) => as.map((a) => ({ href: (a as HTMLAnchorElement).href, text: (a.textContent ?? "").trim() })));
 }
 
-/** Navigation controls that are not anchors: what a single-page app routes with. Submit buttons act on forms, so they are left alone. */
-const NAV_PROBE_SELECTOR = "nav button:not([type=submit]), header button:not([type=submit]), [role=navigation] button:not([type=submit]), [role=link]:not([href]), [data-href], [routerlink], [routerLink]";
-const MAX_PROBES_PER_PAGE = 10;
+/**
+ * Controls that route without being a usable link. Three families, and every one of them is
+ * something `a[href]` collection cannot see:
+ *  - anchors an SPA hangs a click handler on, which carry no href, an empty one, or "#";
+ *  - explicit link/router roles;
+ *  - buttons that sit outside any form, including submit-styled ones - a button styled
+ *    `type=submit` with no form around it submits nothing, so it is navigation, not a form
+ *    action. Anything inside a form is left alone: that belongs to the form's own flow.
+ */
+const NAV_PROBE_SELECTOR = [
+  "a:not([href]):not(form *)",
+  'a[href=""]:not(form *)',
+  'a[href="#"]:not(form *)',
+  "[role=link]:not([href]):not(form *)",
+  "[data-href]:not(form *)",
+  "[routerlink]:not(form *)",
+  "[routerLink]:not(form *)",
+  "button:not(form *)",
+  "[role=button]:not(form *)",
+].join(", ");
+
+const MAX_PROBES_PER_PAGE = 12;
+/** Probing costs a click and a reload each, so the whole crawl gets a ceiling too. */
+const MAX_PROBES_PER_CRAWL = 60;
+
+type ProbeBudget = { labels: Set<string>; spent: number };
+const newProbeBudget = (): ProbeBudget => ({ labels: new Set(), spent: 0 });
+
+/**
+ * What to call a control: visible text first, then the attributes an app labels an icon-only
+ * control with. An anchor holding nothing but a cart glyph still needs a name, both to dedupe
+ * it across pages and to say what was clicked.
+ */
+const LABEL_ATTRS = ["aria-label", "data-test", "data-testid", "title", "name", "id"];
 
 /**
  * Clicks each navigation control on the page once and records where it leads. A control
  * counts as a link when the route changes and stays on the origin; the page is reloaded
- * after every probe so one click never colours the next. Blocklisted labels are never
- * pressed, and a label is probed once per crawl no matter how many pages repeat it.
+ * after every probe so one click never colours the next - a click that opened a menu or a
+ * modal would otherwise cover whatever we press after it. Blocklisted labels are never
+ * pressed, and a label is probed once per crawl no matter how many pages repeat it, which is
+ * what keeps the shared chrome (a cart icon, a menu button) from being paid for on every page.
+ *
+ * Controls are addressed by their index in the selector's own DOM order, so a label that no
+ * element renders as text is still reachable.
  */
-async function probeNav(kit: BrowserToolkit, page: Page, origin: string, path: string, probed: Set<string>): Promise<Link[]> {
-  const labels = await page.locator(NAV_PROBE_SELECTOR).evaluateAll((els) => els.map((el) => (el.textContent ?? el.getAttribute("aria-label") ?? "").trim()));
+async function probeNav(kit: BrowserToolkit, page: Page, origin: string, path: string, budget: ProbeBudget): Promise<Link[]> {
+  const labels = await page.locator(NAV_PROBE_SELECTOR).evaluateAll(
+    (els, attrs) => els.map((el) => (el.textContent ?? "").trim() || attrs.map((a) => el.getAttribute(a)?.trim()).find(Boolean) || ""),
+    LABEL_ATTRS,
+  );
   const found: Link[] = [];
   let probes = 0;
-  for (const text of labels) {
-    if (!text || probed.has(text) || BLOCKLIST.test(text) || probes >= MAX_PROBES_PER_PAGE) continue;
-    probed.add(text);
+  for (let i = 0; i < labels.length; i++) {
+    const text = labels[i];
+    if (!text || budget.labels.has(text) || BLOCKLIST.test(text)) continue;
+    if (probes >= MAX_PROBES_PER_PAGE || budget.spent >= MAX_PROBES_PER_CRAWL) break;
+    budget.labels.add(text);
+    budget.spent++;
     probes++;
     try {
-      const control = page.locator(NAV_PROBE_SELECTOR).filter({ hasText: text }).first();
-      await control.click({ timeout: 2000 });
+      await page.locator(NAV_PROBE_SELECTOR).nth(i).click({ timeout: 2000 });
       await settle(page);
       const landed = page.url();
       if (landed.startsWith(origin) && pathOf(landed) !== path) found.push({ href: landed, text });
     } catch {
       /* not clickable right now: nothing to record */
     }
-    if (pathOf(page.url()) !== path) await kit.act(page, { action: "goto", target: path }).catch(() => {});
+    // Always go back, even when the route never changed: the click may have left a menu or an
+    // overlay open, and the next probe has to meet the page as it first loaded.
+    await kit.act(page, { action: "goto", target: path }).catch(() => {});
+    await settle(page);
   }
   return found;
 }
 
-async function pageInfo(kit: BrowserToolkit, page: Page, origin: string, probed?: Set<string>): Promise<PageInfo> {
+/** Whether a page is showing a login form right now. The one signal every login screen shares. */
+async function hasPasswordField(page: Page): Promise<boolean> {
+  return (await page.locator("input[type=password]").count()) > 0;
+}
+
+const hasPasswordForm = (info: PageInfo): boolean => info.forms.some((f) => f.fields.some((x) => x.type === "password"));
+
+async function pageInfo(kit: BrowserToolkit, page: Page, origin: string, probed?: ProbeBudget): Promise<PageInfo> {
   const url = page.url();
   const path = pathOf(url);
   const links = await collectLinks(page);
@@ -98,16 +149,17 @@ export function filterLinks(links: Link[], origin: string): string[] {
     .map((l) => pathOf(l.href));
 }
 
-/** Finds the first form with a password field, fills it, submits, and returns the steps taken plus the
+/** Finds the first form with a password field, fills it, submits, and returns the steps taken, the
  *  login page's PageInfo (captured before credentials are filled, so it survives even if an authenticated
- *  visit later redirects away from the login path). */
+ *  visit later redirects away from the login path), and the route the login landed on - which is often
+ *  the only door into the signed-in half of the app, since nothing links to it from outside. */
 async function tryLogin(
   kit: BrowserToolkit,
   page: Page,
   loginPath: string,
   origin: string,
   creds: Credentials,
-): Promise<{ steps: Step[]; loginPage: PageInfo } | null> {
+): Promise<{ steps: Step[]; loginPage: PageInfo; landedPath: string } | null> {
   await kit.act(page, { action: "goto", target: loginPath });
   const loginPage = await pageInfo(kit, page, origin);
   const form = loginPage.forms.find((f) => f.fields.some((x) => x.type === "password"));
@@ -123,7 +175,10 @@ async function tryLogin(
   ];
   for (const s of steps.slice(1)) if (!(await kit.act(page, s))) return null;
   await page.waitForLoadState("networkidle").catch(() => {});
-  return pathOf(page.url()) === loginPath ? null : { steps, loginPage };
+  const landedPath = pathOf(page.url());
+  // Still on the login page, or shown it again: the credentials did not take.
+  if (landedPath === loginPath || (await hasPasswordField(page))) return null;
+  return { steps, loginPage, landedPath };
 }
 
 export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentials; maxPages?: number; maxDepth?: number; bus?: NodeDeps["bus"] }): Promise<SiteMap> {
@@ -139,25 +194,33 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   await kit.act(page, { action: "goto", target: "/" });
   const homeLinks = await collectLinks(page);
   const candidate = homeLinks.map((h) => pathOf(h.href)).find((p) => /log-?in|sign-?in/i.test(p));
+  // A demo app often has no "Log in" link to follow because the landing page *is* the login form.
+  // Without this the crawl never signs in, and everything behind the wall goes unexplored.
   if (candidate) loginPath = candidate;
+  else if (await hasPasswordField(page)) loginPath = pathOf(page.url());
   // Pages reachable only from the unauthenticated nav (e.g. "/register") won't be linked once we're
   // logged in, so seed the queue with everything visible before login happens - filtered the same way
   // as the main loop (same-origin, not blocklisted, not a logout link).
   const preLoginPaths = filterLinks(homeLinks, origin);
+  let landedPath: string | null = null;
   if (loginPath && opts.credentials) {
     const result = await tryLogin(kit, page, loginPath, origin, opts.credentials);
     if (result) {
       loginSteps = result.steps;
       pages[loginPath] = result.loginPage;
-      opts.bus?.log("explorer", `logged in via ${loginPath}`);
+      landedPath = result.landedPath;
+      opts.bus?.log("explorer", `logged in via ${loginPath}, landed on ${landedPath}`);
     } else opts.bus?.log("explorer", `login attempt at ${loginPath} did not leave the page`);
   }
 
   const queue: { path: string; depth: number }[] = [{ path: "/", depth: 0 }];
+  // Where the login dropped us is the entrance to the signed-in half of the app, and usually
+  // nothing outside the wall links to it.
+  if (landedPath) queue.push({ path: landedPath, depth: 0 });
   for (const p of preLoginPaths) queue.push({ path: p, depth: 1 });
   if (loginPath) queue.push({ path: loginPath, depth: 1 });
   const seen = new Set<string>();
-  const probed = new Set<string>();
+  const probed = newProbeBudget();
   while (queue.length && Object.keys(pages).length < maxPages) {
     const { path, depth } = queue.shift()!;
     if (seen.has(path) || depth > maxDepth) continue;
@@ -190,7 +253,10 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   }
   await page.close();
 
-  // Gating: revisit each path unauthenticated.
+  // Gating: revisit each path unauthenticated. A route is gated either because the visit is
+  // bounced to the login page, or because the app answers in place with the login screen at the
+  // same URL - which is what a demo app usually does. A page that shows a password field to
+  // everyone (the login page itself, a register page) is not gated by that second rule.
   const anon = await kit.newContext();
   const anonPage = await anon.newPage();
   for (const path of Object.keys(pages)) {
@@ -198,7 +264,9 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
       await anonPage.goto(origin + path, { waitUntil: "domcontentloaded" });
       await settle(anonPage);
       const landed = pathOf(anonPage.url());
-      pages[path].gated = landed !== path && loginPath !== null && landed === loginPath;
+      const bounced = landed !== path && loginPath !== null && landed === loginPath;
+      const blockedInPlace = landed === path && !hasPasswordForm(pages[path]) && (await hasPasswordField(anonPage));
+      pages[path].gated = bounced || blockedInPlace;
     } catch {
       /* unreachable page: leave gated=false */
     }

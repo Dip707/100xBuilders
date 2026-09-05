@@ -243,6 +243,52 @@ describe("plan review and single-test rerun routes", () => {
     expect(video.headers.get("content-type")).toBe("video/webm");
     expect(video.headers.get("cache-control")).not.toBe("no-store");
   });
+
+  it("serves recordings as a seekable resource", async () => {
+    // Without byte-range support Chrome reports video.seekable as [[0, 0]] and refuses to
+    // move currentTime at all, so the player cannot be scrubbed and the poster frame is
+    // stuck on frame zero - which for a Playwright recording is the blank white page.
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-api-range-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "rg/traces/videos", { recursive: true });
+    writeFileSync(process.env.QA_PILOT_OUTPUT + "rg/traces/videos/auth-001.webm", "0123456789");
+    await own("rg");
+    const app = createApi({ store, start: () => ({ runId: "x" }) });
+    const url = `${ORIGIN}/runs/rg/files/traces/videos/auth-001.webm`;
+
+    const full = await app.request(url, { headers: { cookie } });
+    expect(full.status).toBe(200);
+    expect(full.headers.get("accept-ranges")).toBe("bytes");
+    expect(full.headers.get("content-length")).toBe("10");
+
+    const middle = await app.request(url, { headers: { cookie, range: "bytes=2-5" } });
+    expect(middle.status).toBe(206);
+    expect(middle.headers.get("content-range")).toBe("bytes 2-5/10");
+    expect(middle.headers.get("content-length")).toBe("4");
+    expect(await middle.text()).toBe("2345");
+
+    // An open-ended range is what a media element sends when it seeks.
+    const openEnded = await app.request(url, { headers: { cookie, range: "bytes=7-" } });
+    expect(openEnded.status).toBe(206);
+    expect(openEnded.headers.get("content-range")).toBe("bytes 7-9/10");
+    expect(await openEnded.text()).toBe("789");
+
+    // A suffix range asks for the last N bytes, which is how a player finds a WebM cue index.
+    const suffix = await app.request(url, { headers: { cookie, range: "bytes=-3" } });
+    expect(suffix.status).toBe(206);
+    expect(suffix.headers.get("content-range")).toBe("bytes 7-9/10");
+    expect(await suffix.text()).toBe("789");
+
+    // Past the end of the file the spec calls for 416 plus the real size, so the player can
+    // recover rather than treat the recording as broken.
+    const unsatisfiable = await app.request(url, { headers: { cookie, range: "bytes=99-200" } });
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers.get("content-range")).toBe("bytes */10");
+
+    // A range header we cannot parse is ignored, per RFC 9110, not treated as an error.
+    const garbage = await app.request(url, { headers: { cookie, range: "cubits=1-2" } });
+    expect(garbage.status).toBe(200);
+    expect(await garbage.text()).toBe("0123456789");
+  });
 });
 
 

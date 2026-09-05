@@ -37,6 +37,19 @@ export function expectationCode(exp: Expectation, target: string = expectationTa
   }
 }
 
+/** How long to wait for an element. Short on purpose: "this locator does not resolve" is a
+ *  verdict the planner, generator and healer all act on, and each of them pays this in full. */
+export const ELEMENT_TIMEOUT_MS = 5000;
+/** How long to wait for a page to load. A real target over a real network routinely needs more
+ *  than the element timeout - a slow first paint used to fail the very first goto of a crawl and
+ *  take the whole run down with it - so navigation gets its own, generous budget. */
+export const NAVIGATION_TIMEOUT_MS = 30_000;
+
+function applyTimeouts(context: BrowserContext): void {
+  context.setDefaultTimeout(ELEMENT_TIMEOUT_MS);
+  context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+}
+
 export class BrowserToolkit {
   private lastShot = 0;
   /** This toolkit's substitute for the planner's unique placeholder; every launch mints a fresh one. */
@@ -81,7 +94,7 @@ export class BrowserToolkit {
     const headless = opts.headless ?? process.env.QA_PILOT_HEADLESS !== "0";
     const browser = await chromium.launch({ headless });
     const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-    context.setDefaultTimeout(5000);
+    applyTimeouts(context);
     if (opts.screenshotDir) mkdirSync(opts.screenshotDir, { recursive: true });
     const cast = opts.runId && screencastEnabled() ? getScreencast(opts.runId) : undefined;
     return new BrowserToolkit(browser, context, opts.baseUrl.replace(/\/$/, ""), opts.bus, opts.agent ?? "browser", opts.screenshotDir, cast);
@@ -128,7 +141,7 @@ export class BrowserToolkit {
 
   async newContext(): Promise<BrowserContext> {
     const ctx = await this.browser.newContext({ viewport: { width: 1200, height: 800 } });
-    ctx.setDefaultTimeout(5000);
+    applyTimeouts(ctx);
     return ctx;
   }
 

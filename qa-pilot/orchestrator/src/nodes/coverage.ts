@@ -34,7 +34,7 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
       pass += [happy, negative, empty].filter(Boolean).length / 3;
     }
     checks.forms = pass / forms.length;
-    weights.forms = 0.3;
+    weights.forms = 0.2;
   }
 
   // 2. gated routes have an authz flow
@@ -47,7 +47,7 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
       else gaps.push({ kind: "missing_authz", target: p.path, suggest: `visit ${p.path} logged out and expect redirect to ${siteMap.loginPath ?? "login"}` });
     }
     checks.authz = pass / gated.length;
-    weights.authz = 0.2;
+    weights.authz = 0.15;
   }
 
   // 3. PRD requirements
@@ -73,21 +73,39 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
     }
   }
 
-  // 5. category mix
+  // 5. every route worth testing has at least one flow that visits it. Without this a
+  // login-walled app scores full marks on its one login form while the whole application
+  // behind the wall - catalog, cart, checkout - goes unplanned. An authz flow does not count:
+  // it only proves the route is walled off, it never exercises what is on it.
+  const routes = Object.values(siteMap.pages).filter((p) => p.forms.length || p.buttons.length);
+  const untested = routes.filter((p) => !flows.some((f) => f.category !== "authz" && touches(f, p.path)));
+  if (routes.length) {
+    for (const p of untested) {
+      gaps.push({ kind: "missing_route_flow", target: p.path, suggest: `no flow exercises ${p.path}; add one that uses ${p.forms.length ? "its form" : `its controls (${p.buttons.slice(0, 3).map((b) => `"${b.name}"`).join(", ")})`}` });
+    }
+    checks.routes = (routes.length - untested.length) / routes.length;
+    weights.routes = 0.4;
+  }
+
+  // 6. category mix
   const nonHappy = flows.filter((f) => ["negative", "edge", "error_state"].includes(f.category)).length;
   const mix = flows.length ? nonHappy / flows.length : 0;
   checks.mix = Math.min(1, mix / 0.4);
-  weights.mix = 0.2;
+  weights.mix = 0.15;
   if (mix < 0.4) gaps.push({ kind: "category_mix", suggest: `only ${(mix * 100).toFixed(0)}% of flows are negative/edge/error_state; add more` });
 
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
   const score = Object.entries(checks).reduce((acc, [k, v]) => acc + v * weights[k], 0) / totalWeight;
 
-  const untested_risk = Object.values(siteMap.pages)
-    .filter((p) => p.forms.length && !flows.some((f) => touches(f, p.path)))
-    .map((p) => ({ flow: p.path, reason: "form discovered but no flow touches it", risk: "medium" as const }));
+  const untested_risk = untested.map((p) => ({
+    flow: p.path,
+    reason: p.forms.length ? "form discovered but no flow exercises it" : "interactive page discovered but no flow exercises it",
+    risk: "medium" as const,
+  }));
 
-  return { score: Math.round(score * 100) / 100, gaps, untested_risk, checks, prdRequirements: opts.prdRequirements ?? [], prdMatrix: opts.prdMatrix ?? {} };
+  // Kept at full precision: this is the number the gate compares, and rounding 0.748 up to
+  // 0.75 used to wave a half-covered plan through. The UI rounds it for display.
+  return { score, gaps, untested_risk, checks, prdRequirements: opts.prdRequirements ?? [], prdMatrix: opts.prdMatrix ?? {} };
 }
 
 export async function coverageNode(state: RunState, deps: NodeDeps): Promise<RunUpdate> {

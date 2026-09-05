@@ -73,3 +73,44 @@ describe("crawl on a single-page app", () => {
     }
   }, 120_000);
 });
+
+describe("crawl behind a login wall", () => {
+  it("logs in from a landing page that is itself the login form, then explores what is behind it", async () => {
+    const { startKiosk } = await import("./helpers/kiosk.js");
+    const kiosk = await startKiosk();
+    const kit = await BrowserToolkit.launch({ headless: true, baseUrl: kiosk.base });
+    try {
+      const map = await crawl(kit, { credentials: { username: "shopper", password: "hunter2" } });
+      expect(map.loginPath).toBe("/");
+      expect(map.loginSteps.length).toBeGreaterThanOrEqual(4);
+      // Behind the wall: an anchor with no href, an anchor with href="#", and submit-styled
+      // buttons that sit outside any form are all the app gives the crawler to navigate with.
+      expect(Object.keys(map.pages)).toEqual(expect.arrayContaining(["/", "/catalog.html", "/basket.html", "/item.html", "/pay.html"]));
+      expect(map.pages["/pay.html"].forms).toHaveLength(1);
+      // These routes answer an anonymous visitor with the login screen at the same URL.
+      expect(map.pages["/catalog.html"].gated).toBe(true);
+      expect(map.pages["/basket.html"].gated).toBe(true);
+      expect(map.pages["/"].gated).toBe(false);
+    } finally {
+      await kit.close();
+      await kiosk.stop();
+    }
+  }, 180_000);
+});
+
+describe("BLOCKLIST", () => {
+  it("covers the controls that throw app state away, not just the ones that delete a row", async () => {
+    const { BLOCKLIST } = await import("../src/nodes/deps.js");
+    for (const label of ["Delete", "Remove item", "Log out", "Sign out", "Clear data", "Reset App State", "Wipe database", "Erase history", "Revoke token", "Cancel subscription"]) {
+      expect(BLOCKLIST.test(label), label).toBe(true);
+    }
+    // "Reset" is blocked wholesale, "Reset filters" included: a reset control is never the way
+    // to a new route, so skipping a harmless one costs the crawl nothing while clicking a
+    // destructive one mid-crawl invalidates every probe after it.
+    expect(BLOCKLIST.test("Reset filters")).toBe(true);
+    // Ordinary navigation and form controls stay clickable.
+    for (const label of ["Checkout", "Continue Shopping", "Back to products", "Add to cart", "Cancel"]) {
+      expect(BLOCKLIST.test(label), label).toBe(false);
+    }
+  });
+});

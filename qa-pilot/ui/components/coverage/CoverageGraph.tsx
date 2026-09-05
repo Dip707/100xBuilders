@@ -35,7 +35,9 @@ const STATUS_GLYPH: Record<CaseStatus, string> = { planned: "◌", running: "⧗
 function laneOfGap(g: CoverageIteration["gaps"][number]): string {
   if (g.requirement) return "PRD requirements";
   const target = (g.target ?? "").replace(/^form:/, "").replace(/^\//, "");
-  const key = target.split("/")[0]?.split("?")[0] ?? "";
+  // A route target is a path, not a flow id: "/inventory.html?id=4" names the same area as
+  // an "inventory-003" flow, so strip what a server added and keep the word.
+  const key = target.split("/")[0]?.split("?")[0]?.replace(/\.\w+$/, "") ?? "";
   if (!key) return "Plan mix";
   return areaOf(key);
 }
@@ -47,6 +49,7 @@ function gapText(g: CoverageIteration["gaps"][number]): string {
     case "missing_negative": return `No negative case for ${target.replace(/^form:/, "")}`;
     case "missing_empty_submit": return `No empty-submit case for ${target.replace(/^form:/, "")}`;
     case "missing_authz": return `No access-control check for ${target}`;
+    case "missing_route_flow": return `Nothing tests what is on ${target}`;
     case "prd_uncovered": return `PRD: ${target}`;
     case "intent_uncovered": return `Intent "${target}" has no flow`;
     case "category_mix": return "Too few negative and edge flows";

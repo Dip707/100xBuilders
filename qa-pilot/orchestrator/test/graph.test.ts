@@ -8,7 +8,8 @@ import { buildGraph } from "../src/graph.js";
 import { EventBus, getBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
 import { memoryStore } from "../src/store/memory.js";
-import { initialState, outputDir, type Flow } from "../src/state.js";
+import { initialState, outputDir, RunStateAnnotation, type Flow } from "../src/state.js";
+import { StateGraph, START, END } from "@langchain/langgraph";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
@@ -113,4 +114,42 @@ describe("plan review gate", () => {
     expect(after.filter((e) => e.type === "test_start").length).toBeGreaterThan(0);
     expect(final.results!.tests.every((t) => t.videoPath && existsSync(t.videoPath))).toBe(true);
   }, 300_000);
+});
+
+describe("concurrent node failures", () => {
+  it("keeps every reason when two fanned-out nodes fail in the same step", async () => {
+    // Generation fans out one node per flow, and each failure records why the run went partial.
+    // Two failures in one step therefore write that one channel twice, which used to abort the
+    // whole run with "LastValue can only receive one value per step" - losing the passing tests
+    // and the report with them. The channel has to fold concurrent writes, not reject them.
+    const graph = new StateGraph(RunStateAnnotation)
+      .addNode("fanOut", async () => ({}))
+      .addNode("a", async () => ({ partial: true, partialReason: "generate failed: goto timed out" }))
+      .addNode("b", async () => ({ partial: true, partialReason: "generate failed: screenshot timed out" }))
+      .addEdge(START, "fanOut")
+      .addEdge("fanOut", "a")
+      .addEdge("fanOut", "b")
+      .addEdge("a", END)
+      .addEdge("b", END)
+      .compile();
+    const final = await graph.invoke(initialState({ runId: "fanout-1", url: "http://example.test" }));
+    expect(final.partial).toBe(true);
+    expect(final.partialReason).toContain("goto timed out");
+    expect(final.partialReason).toContain("screenshot timed out");
+  });
+
+  it("does not repeat a reason two nodes happen to share", async () => {
+    const graph = new StateGraph(RunStateAnnotation)
+      .addNode("fanOut", async () => ({}))
+      .addNode("a", async () => ({ partial: true, partialReason: "generate failed: goto timed out" }))
+      .addNode("b", async () => ({ partial: true, partialReason: "generate failed: goto timed out" }))
+      .addEdge(START, "fanOut")
+      .addEdge("fanOut", "a")
+      .addEdge("fanOut", "b")
+      .addEdge("a", END)
+      .addEdge("b", END)
+      .compile();
+    const final = await graph.invoke(initialState({ runId: "fanout-2", url: "http://example.test" }));
+    expect(final.partialReason).toBe("generate failed: goto timed out");
+  });
 });

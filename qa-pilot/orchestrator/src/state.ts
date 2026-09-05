@@ -85,7 +85,7 @@ export type Flow = z.infer<typeof FlowSchema>;
 
 // ---------- Coverage ----------
 export const CoverageGapSchema = z.object({
-  kind: z.enum(["missing_happy", "missing_negative", "missing_empty_submit", "missing_authz", "prd_uncovered", "intent_uncovered", "category_mix"]),
+  kind: z.enum(["missing_happy", "missing_negative", "missing_empty_submit", "missing_authz", "missing_route_flow", "prd_uncovered", "intent_uncovered", "category_mix"]),
   target: z.string().optional(),
   requirement: z.string().optional(),
   suggest: z.string(),
@@ -221,7 +221,14 @@ export const RunStateAnnotation = Annotation.Root({
   decisions: Annotation<Decision[]>(append<Decision>()),
   llmCalls: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
   partial: Annotation<boolean>({ reducer: (_a, b) => b, default: () => false }),
-  partialReason: Annotation<string | undefined>(),
+  // Generation fans out one node per flow, so several branches can fail in the same step and
+  // each records why. Without a reducer LangGraph rejects the second write and aborts the whole
+  // run - taking the report, and every test that did pass, with it. Distinct reasons are kept
+  // in the order they arrived; a reason two branches share is recorded once.
+  partialReason: Annotation<string | undefined>({
+    reducer: (a, b) => (!b ? a : !a ? b : a.split("; ").includes(b) ? a : `${a}; ${b}`),
+    default: () => undefined,
+  }),
 });
 export type RunState = typeof RunStateAnnotation.State;
 export type RunUpdate = typeof RunStateAnnotation.Update;

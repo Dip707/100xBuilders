@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve, relative, isAbsolute } from "node:path";
 import { z } from "zod";
@@ -43,6 +43,29 @@ const ChatMessageSchema = z.object({
 const UNTITLED_CHAT = "New chat";
 
 const MIME: Record<string, string> = { html: "text/html", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webm: "video/webm", zip: "application/zip", json: "application/json", md: "text/markdown", ts: "text/plain", jsonl: "text/plain" };
+
+/**
+ * Parses a single byte range against a known file size, per RFC 9110.
+ *
+ * Returns the resolved [start, end] pair (both inclusive), `null` when the header is absent
+ * or unparseable - which the spec says to ignore and answer in full - or "unsatisfiable"
+ * when it asks for bytes past the end of the file.
+ *
+ * Only a single range is honoured. Multi-range replies need a multipart/byteranges body,
+ * and no media element asks for one, so those fall back to the whole file.
+ */
+function parseRange(header: string | undefined, size: number): [number, number] | null | "unsatisfiable" {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header?.trim() ?? "");
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === "" && rawEnd === "") return null;
+  // "bytes=-N" is a suffix range: the last N bytes, not a range starting at zero.
+  const [start, end] = rawStart === ""
+    ? [Math.max(0, size - Number(rawEnd)), size - 1]
+    : [Number(rawStart), rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1)];
+  if (start > end || start >= size) return "unsatisfiable";
+  return [start, end];
+}
 
 /** How often a screencast connection flushes whatever frames have accumulated. */
 const FRAME_TICK_MS = 120;
@@ -362,7 +385,30 @@ export function createApi(opts: {
     // else - live frames, plan.json, results.json, generated specs - is rewritten while
     // the run progresses and a cached copy would show the UI a stale plan.
     const cache = relPath.startsWith("traces/") ? "private, max-age=3600" : "no-store";
-    return c.body(new Uint8Array(readFileSync(path)), 200, { "content-type": MIME[ext] ?? "application/octet-stream", "cache-control": cache });
+    const headers = {
+      "content-type": MIME[ext] ?? "application/octet-stream",
+      "cache-control": cache,
+      // A media element only treats a resource as seekable if the server advertises byte
+      // ranges. Without this the recordings play from the start and cannot be scrubbed,
+      // and the poster frame is pinned to frame zero.
+      "accept-ranges": "bytes",
+    };
+
+    const size = statSync(path).size;
+    const range = parseRange(c.req.header("range"), size);
+    if (range === "unsatisfiable") {
+      return c.body(null, 416, { ...headers, "content-range": `bytes */${size}` });
+    }
+    const body = readFileSync(path);
+    if (!range) {
+      return c.body(new Uint8Array(body), 200, { ...headers, "content-length": String(size) });
+    }
+    const [start, end] = range;
+    return c.body(new Uint8Array(body.subarray(start, end + 1)), 206, {
+      ...headers,
+      "content-range": `bytes ${start}-${end}/${size}`,
+      "content-length": String(end - start + 1),
+    });
   });
 
   return app;
