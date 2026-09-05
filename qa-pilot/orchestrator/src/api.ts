@@ -385,8 +385,11 @@ export function createApi(opts: {
       }
 
       const results = await (opts.rerunTests ?? runRerunTests)(runId, testIds, loginSteps, store);
-      const reply = summariseRerun(results, testIds);
-      const result = resultData(runId, results);
+      // The catalogue is read after the rerun so its statuses are fresh; its verdicts are the
+      // pipeline run's, which is what the chat repeats.
+      const catalogue = buildCatalogue(run);
+      const reply = summariseRerun(results, testIds, catalogue);
+      const result = resultData(runId, results, catalogue);
       await store.appendChatTurn(chatId, [{ role: "assistant", text: reply, at: new Date().toISOString(), data: result }], { pending: null });
       return c.json({ reply, result });
     } finally {

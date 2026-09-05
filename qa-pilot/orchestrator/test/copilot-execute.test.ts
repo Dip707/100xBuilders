@@ -11,6 +11,15 @@ const catalogue: Catalogue = {
   ],
 };
 
+/** The same catalogue after the pipeline classified both failures. */
+const withVerdicts: Catalogue = {
+  ...catalogue,
+  tests: [
+    { ...catalogue.tests[0], verdict: { class: "env", confidence: 0.6, action: "rerun" } },
+    { ...catalogue.tests[1], verdict: { class: "defect", confidence: 0.9, action: "escalate", rationale: "500 from the coupon endpoint" }, defectId: "DEF-1-checkout-001" },
+  ],
+};
+
 const result = (id: string, status: TestResult["status"], error?: string): TestResult => ({
   id, file: "f", title: id, status, network: [], consoleErrors: [], pageErrors: [], durationMs: 1200, ...(error ? { error } : {}),
 });
@@ -54,11 +63,28 @@ describe("summariseRerun", () => {
   it("names tests that produced no result at all", () => {
     expect(summariseRerun([], ["auth-001"])).toBe("0 of 1 passed. auth-001 produced no result; the runner may have failed to start.");
   });
+
+  it("says when the classifier called a still-failing test an app defect", () => {
+    const text = summariseRerun([result("checkout-001", "failed", "Error: still 500")], ["checkout-001"], withVerdicts);
+    expect(text).toBe("0 of 1 passed. checkout-001 still fails and the classifier calls it an app defect: Error: still 500");
+  });
+
+  it("names a non-defect verdict without inviting a ticket", () => {
+    const text = summariseRerun([result("auth-001", "timedOut", "TimeoutError: page.goto")], ["auth-001"], withVerdicts);
+    expect(text).toBe("0 of 1 passed. auth-001 still fails and the classifier called it an environment error: TimeoutError: page.goto");
+  });
 });
 
 describe("resultData", () => {
   it("keeps only what the chat renders, with the error trimmed", () => {
-    const d = resultData("c1", [result("checkout-001", "failed", "x".repeat(500))]);
+    const d = resultData("c1", [result("checkout-001", "failed", "x".repeat(500))], catalogue);
     expect(d).toEqual({ kind: "rerun_result", runId: "c1", results: [{ id: "checkout-001", title: "checkout-001", status: "failed", error: "x".repeat(300), durationMs: 1200 }] });
+  });
+
+  it("carries the original run's verdict and defect id so the chat can offer a ticket", () => {
+    const d = resultData("c1", [result("checkout-001", "failed", "Error: still 500"), result("auth-001", "passed")], withVerdicts);
+    expect(d.results[0]).toMatchObject({ id: "checkout-001", verdict: { class: "defect", confidence: 0.9 }, defectId: "DEF-1-checkout-001" });
+    expect(d.results[1]).toEqual({ id: "auth-001", title: "auth-001", status: "passed", durationMs: 1200, verdict: { class: "env", confidence: 0.6 } });
+    expect("defectId" in d.results[1]).toBe(false);
   });
 });

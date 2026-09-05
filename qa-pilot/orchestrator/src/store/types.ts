@@ -26,7 +26,17 @@ export type RerunPlanData = {
 export type RerunResultData = {
   kind: "rerun_result";
   runId: string;
-  results: { id: string; title: string; status: string; error?: string; durationMs?: number }[];
+  results: {
+    id: string;
+    title: string;
+    status: string;
+    error?: string;
+    durationMs?: number;
+    /** The pipeline run's classification of this test, when it had one. A rerun never classifies. */
+    verdict?: { class: string; confidence: number };
+    /** The defect record the pipeline escalated for this test, when it did. */
+    defectId?: string;
+  }[];
 };
 
 export type ChatMessageData = RerunPlanData | RerunResultData;
