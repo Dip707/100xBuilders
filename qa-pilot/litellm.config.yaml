@@ -1,0 +1,34 @@
+# LiteLLM proxy: exposes an Anthropic-compatible /v1/messages endpoint backed by Gemini,
+# so qa-pilot runs on a Gemini key with no Anthropic key.
+#
+# Run:   ./scripts/litellm-proxy.sh
+# Point qa-pilot at it, in qa-pilot/.env:
+#   QA_PILOT_LLM_BASE_URL=http://localhost:4444
+#   ANTHROPIC_API_KEY=sk-local-dev      # the master_key below; the SDK requires *a* key
+#   QA_PILOT_MODEL=gemini-3.8-flash
+#
+# Port 4444, not 4000: 4000 is the qa-pilot API's own port (QA_PILOT_API_PORT).
+#
+# Setting QA_PILOT_LLM_BASE_URL also switches the LLM client into compat mode, which
+# stops sending `thinking` and `output_config` and puts the JSON Schema in the system
+# prompt instead. That matters because of drop_params below.
+
+model_list:
+  # Model names are what QA_PILOT_MODEL must match exactly. Adjust the gemini/* targets
+  # to whichever models the key actually has access to.
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+general_settings:
+  master_key: sk-local-dev
+
+litellm_settings:
+  # Surface the underlying provider error instead of a generic 500 - when the translation
+  # layer mangles a request, the real message is the only thing worth having.
+  set_verbose: true
+  # Accepts and discards parameters Gemini has no equivalent for. This is why the client
+  # needs compat mode: `output_config` is dropped here, silently, and without it nothing
+  # would tell the model what shape to answer in.
+  drop_params: true
