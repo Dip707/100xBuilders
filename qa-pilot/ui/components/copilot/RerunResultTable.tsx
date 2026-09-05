@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { Icon, Spinner } from "@/components/ui";
-import type { IntegrationPublic, RerunResultData, TicketRecord } from "@/lib/api";
+import { isUsableIntegration, type IntegrationPublic, type RerunResultData, type TicketRecord } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 
 const firstLine = (s: string) => s.split("\n")[0].trim();
@@ -46,13 +46,15 @@ function TicketAction({
   }
   if (row.verdict?.class !== "defect") return null;
   if (integration === undefined) return null;
-  if (integration === null) {
+  if (!isUsableIntegration(integration)) {
+    // Nothing connected, or a connection that never came back from OAuth or has no team or
+    // project picked yet: Settings is where that gets finished.
     return (
       <Link
         href={connectHref}
         className="inline-flex h-7 items-center gap-1.5 rounded-input border border-line px-2.5 text-[12px] font-medium text-body transition-colors hover:bg-selected hover:text-fg"
       >
-        <Icon name="externalLink" size={11} className="text-muted" /> Connect Linear or Jira
+        <Icon name="externalLink" size={11} className="text-muted" /> {integration ? `Finish connecting ${PROVIDER_NAME[integration.provider]}` : "Connect Linear or Jira"}
       </Link>
     );
   }

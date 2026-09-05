@@ -167,12 +167,23 @@ export type CopilotExecution = { reply: string; result: RerunResultData };
 
 export type TrackerProvider = "linear" | "jira";
 
-/** What the API says about the user's tracker connection. Never carries a key. */
-export type IntegrationPublic = { provider: TrackerProvider; label: string; connectedAt: string };
+/** Where a tracker connection files issues: a Linear team or a Jira project. */
+export type TrackerDestination = { id: string; label: string };
 
-export type ConnectInput =
-  | { provider: "linear"; apiKey: string; teamKey?: string }
-  | { provider: "jira"; baseUrl: string; email: string; apiToken: string; projectKey: string };
+/** What the API says about the user's tracker connection. Never carries a token or Composio's account id. */
+export type IntegrationPublic = {
+  provider: TrackerProvider;
+  /** `pending` between creating the OAuth link and the tracker's callback. */
+  status: "pending" | "active";
+  connectedAt: string;
+  destination?: TrackerDestination;
+  /** "Linear · Engineering (ENG)" once a destination is chosen, "Linear" before. */
+  label: string;
+};
+
+/** A connection the copilot can file into: active, with a destination chosen. */
+export const isUsableIntegration = (i: IntegrationPublic | null | undefined): i is IntegrationPublic & { destination: TrackerDestination } =>
+  !!i && i.status === "active" && i.destination !== undefined;
 
 /** An issue filed in the tracker for one test of one run. */
 export type TicketRecord = {
@@ -182,9 +193,14 @@ export type TicketRecord = {
 
 export const getIntegration = () => apiFetch<{ integration: IntegrationPublic | null }>("/integrations").then((r) => r.integration);
 
-/** Verifies the credentials against the tracker and stores them sealed; resolves with the public shape. */
-export const connectIntegration = (input: ConnectInput) =>
-  apiFetch<{ integration: IntegrationPublic }>("/integrations", { method: "PUT", body: JSON.stringify(input) }).then((r) => r.integration);
+/** Starts the OAuth flow; the browser must visit the returned URL and comes back to Settings with `returnTo` carried through. */
+export const startConnect = (provider: TrackerProvider, returnTo?: string | null) =>
+  apiFetch<{ redirectUrl: string }>("/integrations/connect", { method: "POST", body: JSON.stringify({ provider, ...(returnTo ? { return: returnTo } : {}) }) }).then((r) => r.redirectUrl);
+
+export const listDestinations = () => apiFetch<{ destinations: TrackerDestination[] }>("/integrations/destinations").then((r) => r.destinations);
+
+export const setDestination = (id: string) =>
+  apiFetch<{ integration: IntegrationPublic }>("/integrations/destination", { method: "PUT", body: JSON.stringify({ id }) }).then((r) => r.integration);
 
 export const disconnectIntegration = () => apiFetch<void>("/integrations", { method: "DELETE" });
 

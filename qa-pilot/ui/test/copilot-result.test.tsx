@@ -5,7 +5,7 @@ import { RerunPlanCard } from "@/components/copilot/RerunPlanCard";
 import type { RerunResultData } from "@/lib/api";
 
 const NONE = { integration: null, tickets: {}, filing: null, onRaise: () => {} };
-const LINEAR = { provider: "linear" as const, label: "Linear · Engineering", connectedAt: "2026-09-05T10:00:00.000Z" };
+const LINEAR = { provider: "linear" as const, status: "active" as const, destination: { id: "t1", label: "Engineering (ENG)" }, label: "Linear · Engineering (ENG)", connectedAt: "2026-09-05T10:00:00.000Z" };
 const defectRow = { id: "checkout-001", title: "Coupon", status: "failed", error: "Error: 500", durationMs: 4200, verdict: { class: "defect", confidence: 0.9 }, defectId: "DEF-1-checkout-001" };
 const table = (rows: RerunResultData["results"], over: Partial<Parameters<typeof RerunResultTable>[0]> = {}) =>
   renderToStaticMarkup(<RerunResultTable result={{ kind: "rerun_result", runId: "r1", results: rows }} {...NONE} {...over} />);
@@ -48,6 +48,16 @@ describe("RerunResultTable", () => {
     expect(html).toContain("Connect Linear or Jira");
     expect(html).toContain('href="/settings?return=%2Fcopilot"');
     expect(html).not.toContain("Raise in");
+  });
+
+  it("sends a pending or destination-less connection back to Settings to finish", () => {
+    const pending = table([defectRow], { integration: { ...LINEAR, status: "pending", destination: undefined, label: "Linear" } });
+    expect(pending).toContain("Finish connecting Linear");
+    expect(pending).toContain('href="/settings?return=%2Fcopilot"');
+    expect(pending).not.toContain("Raise in");
+    const noDestination = table([defectRow], { integration: { ...LINEAR, destination: undefined, label: "Linear" } });
+    expect(noDestination).toContain("Finish connecting Linear");
+    expect(noDestination).not.toContain("Raise in");
   });
 
   it("offers to raise in the connected tracker", () => {
