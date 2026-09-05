@@ -14,6 +14,7 @@ export { EmptyState } from "./EmptyState";
 export { Spinner } from "./Spinner";
 export { Flash } from "./Flash";
 export { Icon, type IconName } from "./Icon";
+export { TrackerLogo, type TrackerLogoName } from "./TrackerLogo";
 export { Keycap } from "./Keycap";
 export { ThemeToggle } from "./ThemeToggle";
 export { Wallpaper, wallpaperVars, type WallpaperName } from "./Wallpaper";
