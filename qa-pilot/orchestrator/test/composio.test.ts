@@ -90,6 +90,14 @@ describe("destinations", () => {
     expect(extractDestinations("linear", data)).toEqual([{ id: "t1", label: "Engineering (ENG)" }, { id: "t2", label: "Ops (OPS)" }]);
   });
 
+  it("reads Composio's real Linear team payload, which has no key and lists members with ids and names too", () => {
+    const data = {
+      items: [], page_info: { endCursor: "86df", hasNextPage: false },
+      teams: [{ id: "86dfda91-1a5a-40e8-8137-8d184bf48087", members: [{ email: "a@x.test", id: "m1", name: "Ada" }, { email: "b@x.test", id: "m2", name: "Bob" }], name: "ConchAI", projects: [{ id: "p1" }] }],
+    };
+    expect(extractDestinations("linear", data)).toEqual([{ id: "86dfda91-1a5a-40e8-8137-8d184bf48087", label: "ConchAI" }]);
+  });
+
   it("reads Jira projects from a paginated REST payload and a bare array", () => {
     const paged = { values: [{ id: "10000", key: "ACME", name: "Acme Shop", lead: { accountId: "x", displayName: "Ada" } }], total: 1 };
     expect(extractDestinations("jira", paged)).toEqual([{ id: "ACME", label: "Acme Shop (ACME)" }]);
@@ -120,6 +128,18 @@ describe("createIssue", () => {
     expect(out).toEqual({ key: "ACME-7", url: "https://acme.atlassian.net/browse/ACME-7" });
     expect(calls.executed.map((e) => e.body.arguments.issue_type)).toEqual(["Bug", "Task"]);
     expect(calls.executed[0].body.arguments).toMatchObject({ project_key: "ACME", summary: "[qa-pilot] Coupon 500" });
+  });
+
+  it("reads Composio's real Linear create payload, taking the key from the ticket url", async () => {
+    const { sdk } = fakeSdk({ executeAnswers: { LINEAR_CREATE_LINEAR_ISSUE: [ok({ id: "0a1b", ticket_url: "https://linear.app/conchai/issue/CON-17/qa-pilot-coupon-500", issue_title: "[qa-pilot] Coupon 500", issue_description: "..." })] } });
+    const out = await composioTrackerClient(sdk, {} as NodeJS.ProcessEnv).createIssue("u1", "linear", "ca_1", { id: "t1", label: "ConchAI" }, body);
+    expect(out).toEqual({ key: "CON-17", url: "https://linear.app/conchai/issue/CON-17/qa-pilot-coupon-500" });
+  });
+
+  it("reads Composio's real Jira create payload, preferring its browser url over the API self link", async () => {
+    const { sdk } = fakeSdk({ executeAnswers: { JIRA_CREATE_ISSUE: [ok({ id: "12738", key: "TEST-101", self: "https://api.atlassian.com/ex/jira/cloud-id/rest/api/3/issue/12738", browser_url: "https://acme.atlassian.net/browse/TEST-101" })] } });
+    const out = await composioTrackerClient(sdk, {} as NodeJS.ProcessEnv).createIssue("u1", "jira", "ca_1", { id: "ACME", label: "Acme (ACME)" }, body);
+    expect(out).toEqual({ key: "TEST-101", url: "https://acme.atlassian.net/browse/TEST-101" });
   });
 
   it("turns an unsuccessful execution into a TrackerError carrying Composio's words", async () => {
@@ -153,8 +173,9 @@ describe("helpers", () => {
     expect(findFirst(null, () => true)).toBeUndefined();
   });
 
-  it("extractIssue falls back to a Linear url from the identifier", () => {
+  it("extractIssue falls back to a Linear url from the identifier, and to the id when the url has no key", () => {
     expect(extractIssue("linear", { identifier: "ENG-1" })).toEqual({ key: "ENG-1", url: "https://linear.app/issue/ENG-1" });
+    expect(extractIssue("linear", { id: "uuid-1", ticket_url: "https://linear.app/x" })).toEqual({ key: "uuid-1", url: "https://linear.app/x" });
   });
 
   it("publicShape names the destination in the label and never exposes the account id", () => {
