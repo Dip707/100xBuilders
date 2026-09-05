@@ -165,6 +165,36 @@ export type CopilotTurn = {
 
 export type CopilotExecution = { reply: string; result: RerunResultData };
 
+export type TrackerProvider = "linear" | "jira";
+
+/** What the API says about the user's tracker connection. Never carries a key. */
+export type IntegrationPublic = { provider: TrackerProvider; label: string; connectedAt: string };
+
+export type ConnectInput =
+  | { provider: "linear"; apiKey: string; teamKey?: string }
+  | { provider: "jira"; baseUrl: string; email: string; apiToken: string; projectKey: string };
+
+/** An issue filed in the tracker for one test of one run. */
+export type TicketRecord = {
+  id: string; userId: string; runId: string; testId: string;
+  provider: TrackerProvider; key: string; url: string; createdAt: string;
+};
+
+export const getIntegration = () => apiFetch<{ integration: IntegrationPublic | null }>("/integrations").then((r) => r.integration);
+
+/** Verifies the credentials against the tracker and stores them sealed; resolves with the public shape. */
+export const connectIntegration = (input: ConnectInput) =>
+  apiFetch<{ integration: IntegrationPublic }>("/integrations", { method: "PUT", body: JSON.stringify(input) }).then((r) => r.integration);
+
+export const disconnectIntegration = () => apiFetch<void>("/integrations", { method: "DELETE" });
+
+export const listTickets = (runId: string) =>
+  apiFetch<{ tickets: TicketRecord[] }>(`/runs/${encodeURIComponent(runId)}/tickets`).then((r) => r.tickets);
+
+/** Files the test's defect in the connected tracker; resolves with the existing ticket when one was already filed. */
+export const raiseTicket = (runId: string, testId: string) =>
+  apiFetch<{ ticket: TicketRecord }>(`/runs/${encodeURIComponent(runId)}/tests/${encodeURIComponent(testId)}/ticket`, { method: "POST" }).then((r) => r.ticket);
+
 export const createCopilotChat = (scope: ChatScope) =>
   apiFetch<{ chat: Chat }>("/copilot/chats", { method: "POST", body: JSON.stringify(scope) }).then((r) => r.chat);
 

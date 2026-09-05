@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui";
 import { CredentialsRow } from "@/components/chat/Transcript";
-import type { ChatMessage, RerunPlanData } from "@/lib/api";
+import type { ChatMessage, IntegrationPublic, RerunPlanData, TicketRecord } from "@/lib/api";
 import type { LiveStatus } from "@/lib/copilot";
 import { RerunPlanCard } from "./RerunPlanCard";
 import { RerunResultTable } from "./RerunResultTable";
@@ -19,6 +19,7 @@ function Thinking() {
 
 export function CopilotTranscript({
   messages, busy, needsCredentials, credentials, onCredentials, onRunWithCredentials, live,
+  integration, tickets, filing, onRaise, connectHref,
 }: {
   messages: ChatMessage[];
   busy: boolean;
@@ -28,6 +29,14 @@ export function CopilotTranscript({
   onRunWithCredentials: () => void;
   /** The plan currently executing and each test's live status, or null when nothing is running. */
   live: { plan: RerunPlanData; statuses: Record<string, LiveStatus> } | null;
+  /** The user's tracker connection: undefined while loading, null when none. */
+  integration: IntegrationPublic | null | undefined;
+  /** Tickets already filed, by run id then test id. */
+  tickets: Record<string, Record<string, TicketRecord>>;
+  /** The test being filed right now as "runId/testId", or null. */
+  filing: string | null;
+  onRaise: (runId: string, testId: string) => void;
+  connectHref: string;
 }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -53,7 +62,13 @@ export function CopilotTranscript({
           <div key={i} className="space-y-2 px-1">
             <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-body">{m.text}</p>
             {m.data?.kind === "rerun_plan" && <RerunPlanCard plan={m.data} statuses={isLive ? live.statuses : null} live={isLive} />}
-            {m.data?.kind === "rerun_result" && <RerunResultTable result={m.data} />}
+            {m.data?.kind === "rerun_result" && (
+              <RerunResultTable
+                result={m.data} integration={integration} tickets={tickets[m.data.runId] ?? {}}
+                filing={filing?.startsWith(`${m.data.runId}/`) ? filing.slice(m.data.runId.length + 1) : null}
+                onRaise={(testId) => onRaise(m.data!.runId, testId)} connectHref={connectHref}
+              />
+            )}
           </div>
         );
       })}

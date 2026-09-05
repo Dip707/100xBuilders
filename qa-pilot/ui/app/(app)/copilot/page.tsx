@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { PageHeader } from "@/components/shell/PageHeader";
@@ -8,8 +8,8 @@ import { ChatsMenu } from "@/components/chat/ChatsMenu";
 import { Composer } from "@/components/chat/Composer";
 import { CopilotTranscript } from "@/components/copilot/CopilotTranscript";
 import {
-  createCopilotChat, deleteChat as deleteChatApi, executeCopilot, getChat, listCopilotChats, sendCopilotMessage,
-  type Chat, type ChatMessage, type ChatScope, type ChatSummary, type RerunPlanData,
+  createCopilotChat, deleteChat as deleteChatApi, executeCopilot, getChat, getIntegration, listCopilotChats, listTickets, raiseTicket, sendCopilotMessage,
+  type Chat, type ChatMessage, type ChatScope, type ChatSummary, type IntegrationPublic, type RerunPlanData, type TicketRecord,
 } from "@/lib/api";
 import { useRunEvents } from "@/lib/events";
 import { isSettled, liveStatuses, pendingPlan } from "@/lib/copilot";
@@ -46,6 +46,42 @@ export default function CopilotPage() {
   const [running, setRunning] = useState<{ plan: RerunPlanData; at: string } | null>(null);
   /** The run the chat has settled on, once a turn has resolved one. */
   const [scopeRunId, setScopeRunId] = useState<string | null>(null);
+  /** The user's tracker connection: undefined until the first answer, so no row offers "Connect" prematurely. */
+  const [integration, setIntegration] = useState<IntegrationPublic | null | undefined>(undefined);
+  /** Tickets already filed, by run id then test id. A run is fetched once, the first time a result for it is shown. */
+  const [tickets, setTickets] = useState<Record<string, Record<string, TicketRecord>>>({});
+  const [filing, setFiling] = useState<string | null>(null);
+
+  useEffect(() => {
+    getIntegration().then(setIntegration).catch(() => setIntegration(null));
+  }, []);
+
+  // Every run a stored result bubble refers to, so a reopened chat shows the same issue links.
+  const resultRunIds = useMemo(() => [...new Set(messages.flatMap((m) => (m.data?.kind === "rerun_result" ? [m.data.runId] : [])))], [messages]);
+  const ticketsFetched = useRef(new Set<string>());
+  useEffect(() => {
+    for (const runId of resultRunIds) {
+      if (ticketsFetched.current.has(runId)) continue;
+      ticketsFetched.current.add(runId);
+      listTickets(runId)
+        .then((list) => setTickets((prev) => ({ ...prev, [runId]: Object.fromEntries(list.map((t) => [t.testId, t])) })))
+        .catch(() => ticketsFetched.current.delete(runId));
+    }
+  }, [resultRunIds]);
+
+  async function raise(runId: string, testId: string) {
+    if (filing) return;
+    setError(null);
+    setFiling(`${runId}/${testId}`);
+    try {
+      const ticket = await raiseTicket(runId, testId);
+      setTickets((prev) => ({ ...prev, [runId]: { ...(prev[runId] ?? {}), [testId]: ticket } }));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setFiling(null);
+    }
+  }
 
   const refreshChats = useCallback(() => {
     listCopilotChats().then(setChats).catch(() => {});
@@ -67,6 +103,13 @@ export default function CopilotPage() {
     // A chat reopened mid-rerun resumes watching the same plan.
     setRunning(chat.pending ? pendingPlan(chat.messages) : null);
   };
+
+  // Coming back from Settings lands on this page afresh; `?chat=` reopens the chat that sent the person there.
+  const chatFromUrl = params.get("chat");
+  useEffect(() => {
+    if (!chatFromUrl) return;
+    getChat(chatFromUrl).then(adopt).catch(() => {});
+  }, [chatFromUrl]);
 
   async function run(id: string, plan: RerunPlanData, at: string, creds?: { username: string; password: string }) {
     setRunning({ plan, at });
@@ -194,6 +237,8 @@ export default function CopilotPage() {
             messages={messages} busy={busy} needsCredentials={needsCredentials}
             credentials={credentials} onCredentials={setCredentials} onRunWithCredentials={runWithCredentials}
             live={live}
+            integration={integration} tickets={tickets} filing={filing} onRaise={(runId, testId) => void raise(runId, testId)}
+            connectHref={`/settings?return=${encodeURIComponent(chatId ? `/copilot?chat=${chatId}` : "/copilot")}`}
           />
         )}
 
