@@ -1,25 +1,61 @@
 # Architecture
 
 ```mermaid
-flowchart LR
-  explore --> plan --> evaluate_coverage
-  evaluate_coverage -- "score < 0.75 and iterations < 3" --> plan
-  evaluate_coverage -- "score >= 0.75" --> generate
-  generate --> run --> classify
-  classify -- "script, attempts < 2" --> heal --> run
-  classify -- "flaky, reruns < 2" --> prepareRerun --> run
-  classify -- "done" --> report
-  any -- "budget exceeded" --> report
+flowchart TD
+  classDef llm fill:#e6f0ff,stroke:#3366cc,color:#1a2b4c;
+  classDef det fill:#eafaf1,stroke:#2e8b57,color:#173a26;
+  classDef guard fill:#fff3cd,stroke:#c99a2e,color:#4a3800;
+
+  START([run: url + intent / PRD]) --> EXPLORE["explore<br/>Explorer (crawl + gating)"]:::det
+  EXPLORE --> PLAN["planFlows<br/>Planner (LLM)"]:::llm
+  PLAN --> COVERAGE{"evaluate_coverage<br/>Meta-agent gap check<br/>(deterministic score)"}:::det
+  COVERAGE -- "score < 0.75 & iterations < 3<br/>(repair guarded by REPAIR_IMMUTABLE)" --> PLAN
+  COVERAGE -- "score >= 0.75 or<br/>3 iterations reached" --> REVIEWQ{reviewPlan?}
+  REVIEWQ -- yes --> GATE[["review<br/>human approves / edits plan"]]
+  REVIEWQ -- no --> GENERATE
+  GATE --> GENERATE
+  GENERATE["generateFlow (fan-out)<br/>Generator (LLM), one agent per flow<br/>live selector/assertion validation"]:::llm --> RUN["run<br/>Runner (Playwright)"]:::det
+  RUN --> CLASSIFY{"classify<br/>rule-based signals +<br/>bounded LLM confidence nudge"}:::llm
+  CLASSIFY -- "class = env" --> STOP["stop<br/>avoid false defects"]
+  CLASSIFY -- "action = heal" --> HEAL["heal<br/>assertion: deterministic re-target<br/>step: LLM suggestion"]:::det
+  HEAL -- "healed" --> RUN
+  HEAL -- "guard rejects re-target" --> ESCALATE["escalated as defect"]:::guard
+  CLASSIFY -- "confidence 0.5-0.8" --> RERUN["prepareRerun"] --> RUN
+  CLASSIFY -- "escalate / needs_human / healed" --> REPORT
+  ESCALATE --> REPORT
+  STOP --> REPORT["report<br/>final report"]:::det
 ```
 
 The diagram labels the planning step `plan` because that is what every event and decision calls it.
 In the LangGraph build (`orchestrator/src/graph.ts`) the node is actually registered as `planFlows`, because LangGraph rejects a node name that collides with a state channel name and the run state has a `plan` channel (the flow list).
 The `guarded("plan", ...)` wrapper keeps the logged node name as `plan` for events and decisions, so the graph wiring and the observable behavior stay consistent even though the internal node id differs.
 
-## Split between code and the model
+Every guarded node (`explore`, `planFlows`, `evaluate_coverage`, `generateFlow`, `run`, `classify`, `heal`) also has an implicit edge to `report` the moment the run's LLM-call or time budget runs out (the `guarded` wrapper in `graph.ts`), which finishes the run with `partial: true` and a reason instead of hanging or throwing. That edge is omitted from the diagram above to keep it readable.
 
-Deterministic code: crawling, gating detection, locator resolution, codegen, running, evidence gathering, signal weighting, the expect guard.
-Claude with structured outputs: turning the site map into flows, repairing an unresolvable flow, re-targeting an expectation that is false live, extracting PRD requirements and mapping them, writing the classification rationale, choosing a replacement element in the healer.
+## LLM calls vs. deterministic code
+
+Precise per-node breakdown, verified against `orchestrator/src/nodes/*.ts`:
+
+| Node | Calls an LLM for | Deterministic |
+|---|---|---|
+| `explore` | never | crawling, gating detection, form/button/link extraction (`nodes/explore.ts`) |
+| `planFlows` | `plan` (effort `high`) turns the site map into a flow list; `plan-repair` (`medium`) only when a step doesn't resolve live | dry-walking every flow against the live app (`dryWalk`); the `REPAIR_IMMUTABLE` guard on any repair |
+| `evaluate_coverage` | `prd-requirements` / `prd-matrix` (`medium`), only when a PRD was supplied, and only computed once | `scoreCoverage` is a fixed weighted-checks formula — forms, authz routes, PRD matrix, intent keywords, category mix — with no LLM involved even when a PRD is present |
+| `generateFlow` | `expect-repair` (`medium`), only when a live-validated expectation is false; `self-repair` (`medium`), only when a step still fails after initial generation | codegen (`codegen/template.ts`); every LLM suggestion is accepted only after it is re-verified live |
+| `run` | never | Playwright execution, network/console/error capture |
+| `classify` | `classify-rationale` (`low`) writes the narrative and may nudge confidence by at most ±0.1, and only runs for genuine failures | `scoreSignals` — the rule engine that decides class and base confidence — is pure code |
+| `heal` | `heal` (`medium`), only for a **step** failure | `pickAssertionTarget` re-targets an **assertion** failure by role + name-similarity ranking; no LLM call, and the untrusted page snapshot never reaches a model on this path |
+| `report` | never | markdown/HTML rendering, suite bundling |
+
+## Anti-bug-hiding guards
+
+qa-pilot's central design constraint: no stage — LLM-driven or not — may make a failing test pass by weakening what it proves. A test that goes green because an assertion was quietly changed is worse than a test that stays red, because it hides the defect instead of reporting it. That constraint is enforced by guards at several different layers of the pipeline, and they do not substitute for one another — removing any one of them reopens a different way to fake a pass:
+
+- **Structural** (`guardExpects`, `expectSignature` in `nodes/heal.ts`): every `await expect(...)` line is reduced to a signature — the target's role (or `page`/`body`), the matcher, its negation, and its arguments, with the accessible *name* stripped out. A patch is accepted only when the before/after signature lists match exactly, so an assertion may be re-targeted to another element but nothing may add, remove, negate, or change what a matcher checks. The generator's self-repair path (`nodes/generate.ts`) enforces a stricter version of the same idea: because self-repair is only ever supposed to touch step code, it requires the expect lines to come back byte-for-byte identical, not merely signature-equal.
+- **Semantic** (`MIN_ASSERTION_NAME_SIMILARITY = 0.8` in `nodes/heal.ts`): `guardExpects` strips the target's name, which is correct for a *step* (a renamed button is a locator problem) but wrong for an *assertion*, where the name is often the thing being proven. An app that loses its "Log In" button while keeping a "Sign Up" button still satisfies `expect(getByRole('button')).toBeVisible()` under an identical signature — a healer free to rename the target could turn a broken login page green, which is the precise failure this project exists to catch. `pickAssertionTarget` only re-targets to an element whose accessible name has at least 0.8 bigram similarity to the one the plan named; below that bar the failure escalates as a defect instead of healing.
+- **Role** (`findNearTwins` in `browser/snapshot.ts`): candidates are filtered to the same accessible role before they are ranked by name similarity, so an assertion can never be re-targeted from, say, a `heading` to a `button`, however similar the text.
+- **Plan-stage** (`driftedFields` / `REPAIR_IMMUTABLE` in `nodes/plan.ts`): when a planned flow's step can't be resolved live, `plan-repair` is asked to fix it, but only its `steps` are kept — `id`, `title`, `category`, `priority`, `preconditions`, `expected`, and `source` are immutable, and any field the model drifted is discarded and logged as a decision. A repair that rewrote `expected` could manufacture an assertion nothing on the page satisfies, which the runner would fail and the classifier would then report as an application defect that was never real.
+- **Deterministic-by-default**: the paths that decide pass/fail make no LLM call at all. Coverage scoring (`scoreCoverage`) is a fixed formula. Assertion healing (`pickAssertionTarget`) is a ranking function. Classification (`scoreSignals`) is rule-based; the one LLM call in `classify` only writes the rationale text and may nudge a mid-band (0.5–0.8) confidence by at most ±0.1 (`adjustConfidence`) — a confident or weak verdict is never moved by the model at all. Everywhere an LLM does decide something load-bearing (an assertion is false live, a step won't resolve, a rename plausibly explains a failure), its answer is never trusted on its own: it is re-verified against the live page or the actual test result before being accepted.
 
 ## Exploring single-page apps
 
@@ -27,6 +63,14 @@ The crawler waits for the network to go idle before reading a page, so links ren
 Routes are keyed by pathname plus the fragment when the app routes on hashes (`/#/faq`), and `goto` accepts those keys as they are.
 Navigation controls that are not anchors (buttons inside `nav`, `header` or `[role=navigation]`, `[role=link]` without an href, `data-href` and `routerlink` attributes) are probed once each: the crawler clicks the control, records the route it lands on when it stays on the origin, and reloads the page before the next probe.
 Submit buttons are never probed, blocklisted labels (delete, remove, log out, clear, ...) are never pressed, and a label is probed once per crawl.
+
+## Plan repair
+
+Before a planned flow reaches generation, `planNode` dry-walks it against the live app (`dryWalk`): every step is executed for real, with no spec file written yet. A step that can't be resolved sends the flow to one `plan-repair` LLM call with the failing step and a live snapshot, asking only for new steps that reach it.
+
+Only the repair's `steps` are kept. `driftedFields` diffs the immutable fields (`id`, `title`, `category`, `priority`, `preconditions`, `expected`, `source`) between the original flow and the repaired one; any field the model tried to move is discarded and logged as a decision, and only `{ ...flow, steps: repaired.steps }` is dry-walked again. A flow that still can't be resolved after repair is dropped from the plan and recorded under `unresolvedFlows`.
+
+This guard exists for the same reason `guardExpects` does: `plan-repair.md` already asks the model not to change `expected`, but a prompt is a request, not a guarantee, and a repair that rewrote an expectation would manufacture a defect that was never on the app.
 
 ## Live assertion validation
 
@@ -38,6 +82,8 @@ When nothing fits, the original expectation is emitted unchanged, so the runner 
 A re-targeted expectation is recorded in run state under the flow's id (`expectations`); the plan keeps what the planner wrote, and the healer and the defect ticket verify against what the spec asserts, so a heal is never rejected for failing an expectation the generator had already replaced.
 Two rules at the schema boundary keep the planner honest, and the LLM client retries with the validation message when they trip: a `url_contains` or `url_stays` value must be a path or route, and a `visible`, `not_visible` or `text_contains` expectation must name its element or the text it looks for, because a bare role ("an alert is visible") is satisfied by the app's own error message.
 Expectation targets are resolved the way step targets are: the loose name match first, `exact: true` only when the loose match is ambiguous, so an emitted assertion never trips strict mode on the page it was validated against.
+
+When a generated test still fails on a *step* after this validation, the generator gets one more chance: a `self-repair` LLM call sees the full source, the error, and a live snapshot at the failing step, and returns a rewritten source. The rewrite is applied only when `expectLines(repaired.source)` comes back byte-for-byte identical to the original's expect lines — stricter than `guardExpects`'s signature comparison, because self-repair is only supposed to touch step code, never assertions. A rewrite that touched an expect line at all, even in a way `guardExpects` would tolerate, is rejected outright and the original result stands.
 
 ## Test data
 
@@ -55,12 +101,18 @@ An assertion whose target element is not found is read the way a missing step ta
 A test that already has a defect ticket stays escalated on every later pass; re-analysing it would only heal it again or file the same defect twice.
 A test that passes after an accepted heal is reported as healed (class `script`, action `healed`), not as flaky; only a test that recovers on a plain rerun is flaky.
 The runner is configured with a bounded action timeout so that a click on a missing element fails with a locator error naming the step; without it Playwright waits out the whole test timeout and reports `timedOut` with no error location, which leaves nothing for the classifier or the healer to work with.
+A confidence below 0.5 is reported as `needs_human` rather than heal, rerun, or escalate — the rule engine is explicitly declining to guess.
 
 ## The heal rule
 
-The healer may change how a test reaches an expectation, and may re-target an expectation to another element of the same role, but never what is asserted.
-`guardExpects` reduces every `await expect(` line to a signature (the target's role, or `page` or `body`; the matcher; its negation; its arguments) and rejects a patch that adds, removes or alters any signature, reclassifying the failure as a defect.
-So a heal may turn `expect(page.getByRole('heading', { name: 'Product catalogue' }))` into `expect(page.getByRole('heading', { name: 'Products' }))`, and only after the re-targeted expectation has been verified live, but it can never swap a `status` for the page body, drop a `not`, or change the text a matcher looks for.
+The healer may change how a test reaches an expectation, and may re-target an expectation to another element, but never what is asserted.
+
+For a **step** failure, a replacement element comes from one `heal` LLM call given a live snapshot; the suggestion is only used once `kit.act` actually succeeds against it live, and a confidence below 0.5 reclassifies the failure as a defect ("no element accomplishes the step's intent") instead of guessing.
+
+For an **assertion** failure, no LLM is consulted at all: `pickAssertionTarget` (`nodes/heal.ts`) ranks same-role elements on the live snapshot by accessible-name similarity to the one the plan named, and only accepts a candidate at or above `MIN_ASSERTION_NAME_SIMILARITY` (0.8). `findNearTwins` (`browser/snapshot.ts`) enforces the role match; the similarity score enforces that the name — often the very thing being proven — wasn't part of what changed. Anything short of that bar escalates as a defect rather than healing, because re-targeting to it would change which element the assertion proves.
+
+Whichever path finds a candidate, the patch is kept only once it is verified twice: live (`kit.checkExpectation` must actually pass against the new target) and structurally, by `guardExpects`. `guardExpects` reduces every `await expect(` line to a signature (the target's role, or `page` or `body`; the matcher; its negation; its arguments) and rejects a patch that adds, removes or alters any signature, reclassifying the failure as a defect.
+So a heal may turn `expect(page.getByRole('heading', { name: 'Product catalogue' }))` into `expect(page.getByRole('heading', { name: 'Products' }))`, but it can never swap a `status` for the page body, drop a `not`, or change the text a matcher looks for.
 A failure on an expect line is healable only when the expectation names an element; a failing URL or body-text assertion goes straight to escalation.
 
 ## The take-home suite

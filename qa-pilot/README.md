@@ -50,6 +50,48 @@ The sign-in the agent recorded is baked into `fixtures.ts`, but the credentials 
 `BASE_URL` overrides the target, so the same suite runs against another environment.
 In the UI, **Download suite** on the run header returns the same thing as a zip.
 
+## Architecture
+
+qa-pilot is a meta-agent — a LangGraph state machine (`orchestrator/src/graph.ts`) — coordinating sub-agents that map onto the required pipeline: a **Planner**, a **Meta-agent gap check** (the coverage evaluator), a **Generator**, an **Execution + Healer** stage, and a final **Report**.
+
+```mermaid
+flowchart TD
+  classDef llm fill:#e6f0ff,stroke:#3366cc,color:#1a2b4c;
+  classDef det fill:#eafaf1,stroke:#2e8b57,color:#173a26;
+  classDef guard fill:#fff3cd,stroke:#c99a2e,color:#4a3800;
+
+  START([run: url + intent / PRD]) --> EXPLORE["explore<br/>Explorer (crawl + gating)"]:::det
+  EXPLORE --> PLAN["planFlows<br/>Planner (LLM)"]:::llm
+  PLAN --> COVERAGE{"evaluate_coverage<br/>Meta-agent gap check<br/>(deterministic score)"}:::det
+  COVERAGE -- "score < 0.75 & iterations < 3<br/>(repair guarded by REPAIR_IMMUTABLE)" --> PLAN
+  COVERAGE -- "score >= 0.75 or<br/>3 iterations reached" --> REVIEWQ{reviewPlan?}
+  REVIEWQ -- yes --> GATE[["review<br/>human approves / edits plan"]]
+  REVIEWQ -- no --> GENERATE
+  GATE --> GENERATE
+  GENERATE["generateFlow (fan-out)<br/>Generator (LLM), one agent per flow<br/>live selector/assertion validation"]:::llm --> RUN["run<br/>Runner (Playwright)"]:::det
+  RUN --> CLASSIFY{"classify<br/>rule-based signals +<br/>bounded LLM confidence nudge"}:::llm
+  CLASSIFY -- "class = env" --> STOP["stop<br/>avoid false defects"]
+  CLASSIFY -- "action = heal" --> HEAL["heal<br/>assertion: deterministic re-target<br/>step: LLM suggestion"]:::det
+  HEAL -- "healed" --> RUN
+  HEAL -- "guard rejects re-target" --> ESCALATE["escalated as defect"]:::guard
+  CLASSIFY -- "confidence 0.5-0.8" --> RERUN["prepareRerun"] --> RUN
+  CLASSIFY -- "escalate / needs_human / healed" --> REPORT
+  ESCALATE --> REPORT
+  STOP --> REPORT["report<br/>final report"]:::det
+```
+
+Two loops keep the pipeline honest without a human in it: coverage below 0.75 sends the plan back to the Planner with the gap list (up to 3 iterations), and a mid-band classifier confidence (0.5–0.8) triggers a rerun before a verdict is trusted. An optional review gate can pause the run after the coverage check for a human to edit or trim the plan, but it is off by default so a run stays fully autonomous.
+
+The system's central invariant is that no stage — LLM-driven or not — can make a failing test pass by weakening what it proves. That is enforced by guards at several layers that don't substitute for one another:
+
+- **structural** — `guardExpects` reduces every `expect()` line to a signature and rejects any patch that changes one
+- **semantic** — a healed assertion may only be re-targeted to an element whose name is at least 80% similar to the one the plan named, so a rename like "Log In" → "Sign Up" escalates as a defect instead of healing green
+- **role** — a re-targeted assertion is filtered to the same element role first, so it can never cross from a `heading` to a `button`
+- **plan-stage** — when the Planner repairs an unresolvable step, only its steps are kept; the flow's expectations are immutable and any drift is discarded
+- **deterministic-by-default** — coverage scoring and assertion healing make no LLM call at all, and classification is a rule engine with the model bounded to a ±0.1 confidence nudge
+
+See `ARCHITECTURE.md` for the full per-node LLM/deterministic breakdown, the guard rationale with source references, and the milestone verification log.
+
 ## The UI
 
 Every run has three screens, reachable from the sidebar once a run is open.

@@ -122,14 +122,63 @@ app, hand-written test scripts.
 - The plan node is registered as `planFlows` because LangGraph rejects a node
   name that collides with a state channel, and `plan` is a channel. The
   `guarded("plan", ...)` label keeps events and decisions reading `plan`.
+- The gap loop stops on three conditions, not two: coverage >= 0.75, iterations
+  exhausted, **or `replanStalled`** - an iteration that failed to move the score
+  by more than `STALL_EPSILON`. A converged planner will reproduce the same gaps,
+  so grinding to `MAX_PLAN_ITERATIONS` spends the pipeline's most expensive LLM
+  call (`plan`, effort `high`) to learn nothing. The unclosed gaps go into the
+  report instead. `afterCoverage` reads the score history from `coverage.json`,
+  so any test touching it must set its own `QA_PILOT_OUTPUT`.
+- `scoreCoverage` has six dimensions; `errors` (0.15) is separate from `mix` on
+  purpose. A plan can satisfy the non-happy ratio with validation-error flows
+  alone and never ask what the app does when a *request* fails - a validation
+  error is the app working, a failed request is the app under duress, and only
+  the second shows whether failure is surfaced or silently swallowed.
+- Intent scoping matches against a flow's title, step targets/names **and**
+  assertions, with a fuzzy fallback. Title-only substring matching scored a flow
+  named "Place order" as zero coverage for the intent "focus on checkout" even
+  though every step ran through /checkout.
 - **Never weaken the healer's guard.** `guardExpects` in `nodes/heal.ts` reduces
   every `await expect(` line to a signature and rejects any patch that alters
   one. A healer that can edit assertions is a bug-hider, and this is the single
   most load-bearing invariant in the project.
+- `guardExpects` strips the target's accessible *name* from the signature, so on
+  its own it would accept `"Log In"` -> `"Sign Up"` on an assertion: same role,
+  same matcher, live-visible, green suite on a broken login page.
+  `MIN_ASSERTION_NAME_SIMILARITY` (0.8) in `nodes/heal.ts` closes that: a heal may
+  re-target an assertion only across a cosmetic rename (`"Log In"` -> `"Log in"`,
+  1.0), never a semantic one (`"Log In"` -> `"Sign Up"`, 0.0). Below the bar the
+  test escalates as a defect. The two guards are complementary - structural
+  (`guardExpects`) and semantic (`MIN_ASSERTION_NAME_SIMILARITY`) - and neither
+  substitutes for the other.
+- **Assertion healing makes no LLM call.** Because the similarity bar admits only
+  same-role elements whose names are near-copies, there is no judgement left to
+  delegate: `pickAssertionTarget` in `nodes/heal.ts` ranks candidates with
+  `findNearTwins` and takes the top one, or escalates. `heal.md` is therefore a
+  step-only prompt. The step path still calls the LLM, and may cross roles (a link
+  replacing a button), because its patch is verified by acting live and re-running
+  every assertion. `heal.test.ts` asserts `llm.calls === 0` on the assertion path;
+  keep that assertion if you touch this.
 - Likewise, when the generator cannot validate an assertion live it emits the
   original unchanged so the runner fails and the classifier can call the defect.
   Do not "fix" that into passing.
+- **A plan repair contributes steps and nothing else.** `driftedFields` /
+  `REPAIR_IMMUTABLE` in `nodes/plan.ts` carry id, title, category, priority,
+  preconditions, expectations and source over from the original flow and log
+  anything the repair tried to move. `dryWalk` only re-walks *steps*, so an
+  unguarded repair could rewrite `expected` into an assertion the page never
+  satisfies - the runner fails it and the report names an application defect that
+  does not exist. A fabricated defect damages the product's core claim as much as
+  a hidden one. `plan-repair.md` asked for this in prose long before anything
+  enforced it; prose is not a guard.
 - The `Store` interface has two implementations and `test/store.test.ts` runs the
   same contract against both. Add to the contract test when adding a method.
+- `budgetSnapshot` in `browser/toolkit.ts` caps every accessibility snapshot at
+  `QA_PILOT_MAX_SNAPSHOT_CHARS` (default 12000, 0 = uncapped). It is tunable and
+  not fixed because the right answer is model-dependent: compaction helps
+  small/mid-tier models and can hurt a frontier model with a large thinking
+  budget. Truncation is on a line boundary and leaves a marker saying how many
+  lines were dropped - a silently cut-off tree makes a model report a missing
+  element as a defect.
 - Tests use `FakeLlmClient` with canned answers; `npm test` needs no API key and
   no database.
