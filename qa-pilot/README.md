@@ -76,6 +76,10 @@ Every chat is saved under a title taken from the first request, so the dropdown 
 A run's login is never stored, so after the API restarts a rerun of signed-in tests asks for the target app's account in masked inputs; the values travel only with that request.
 *Ask copilot* on a run header opens a chat scoped to that run.
 
+When a rerun still fails and the pipeline's classifier called that failure an app defect, the row offers to file it.
+Connect Linear or Jira once under Settings (the user menu) and the row reads *Raise in Linear* or *Raise in Jira*; the ticket carries the repro steps, expected and actual, the classifier's evidence, the rerun error and a link back to the case, and the row turns into the issue's link.
+A failure the classifier called an environment error, a script bug or flaky is named as such and never invited to a ticket.
+
 ## Demo script (5 minutes)
 
 1. Start the three services and open the UI.
@@ -101,6 +105,8 @@ A screenshot of the live UI during a fake-LLM run that stops at planning, showin
 | `QA_PILOT_SCREENCAST` | `1` | `0` turns off the live viewport stream on the run screen |
 | `QA_PILOT_API_PORT` | `4000` | API port |
 | `QA_PILOT_OUTPUT` | `qa-pilot/output/` | where run artifacts go |
+| `QA_PILOT_SECRET` | required to connect a tracker | encrypts Linear and Jira credentials at rest; any long random string |
+| `QA_PILOT_UI_ORIGIN` | `http://localhost:3000` | the UI's origin, allowed by CORS and used for the case link a filed ticket carries |
 
 ## Tests
 

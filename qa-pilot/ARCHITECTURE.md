@@ -128,6 +128,13 @@ The report node writes `login-steps.json`, the recorded sign-in with `{{username
 When the run's login context is no longer in memory, the execute call hydrates that file with credentials sent in the request and discards them when it returns.
 
 Copilot chats share the `chats` collection with the intake chat under `kind: "copilot"`; documents without a kind are intake chats.
+
+### Defect tickets
+
+A rerun never classifies.
+The result stored on the chat carries each test's verdict and defect id from the pipeline run's catalogue, and the transcript offers a ticket only on a `defect` verdict; a `page.goto` timeout is an environment error by the classifier's own rules and stays one in the chat.
+`PUT /integrations` verifies a Linear API key (the `viewer` and `teams` query) or a Jira Cloud email, token and project (`GET /rest/api/3/project/:key`) against the tracker, seals the config with AES-256-GCM under `QA_PILOT_SECRET`, and stores one connection per user in `integrations`; the client only ever sees the provider and a label.
+`POST /runs/:id/tests/:test/ticket` builds one provider-agnostic body from `defects.json` (or the plan flow and latest result when nothing was escalated), renders it as markdown for Linear's `issueCreate` or as Atlassian Document Format for Jira's `POST /rest/api/3/issue`, and records the issue in `tickets`, unique per user, run and test, so a second click answers the existing ticket instead of filing twice.
 Live progress reaches the chat through the run's existing `/events/:runId` stream opened with `?follow=1`, which keeps it open past the run's `done` so the rerun's `test_start` and `test_result` events arrive; the screen filters them to events after the plan's timestamp so a replayed old result is not mistaken for this rerun's.
 
 ## Milestone log
