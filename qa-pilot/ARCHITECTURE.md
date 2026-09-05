@@ -26,9 +26,20 @@ Claude with structured outputs: turning the site map into flows, repairing an un
 The crawler waits for the network to go idle before reading a page, so links rendered by JavaScript are seen.
 Routes are keyed by pathname plus the fragment when the app routes on hashes (`/#/faq`), and `goto` accepts those keys as they are.
 Controls that route without being a usable link are probed once each: anchors with no href, an empty one or `#`, `[role=link]` without an href, `data-href` and `routerlink` attributes, and any button outside a form, including submit-styled ones that have no form to submit.
-The crawler clicks the control, records the route it lands on when it stays on the origin, and reloads the page after every probe so a menu or overlay one click opened never covers the next.
+The crawler clicks the control, gives the router a moment to change the URL, and records the route it lands on when it stays on the origin.
+The page is put back only when the click navigated or left a dialog or menu open that would cover the next control; a click that did neither costs an Escape, since reloading after every one of a dashboard's dozens of buttons made the crawl look stuck on a single page.
 Buttons inside a form belong to that form's flow and are left alone, blocklisted labels (delete, remove, log out, reset, clear, ...) are never pressed, and a label is probed once per crawl with a ceiling on probes per page and per crawl.
 An icon-only control is named after its `aria-label`, `data-test`, `data-testid`, `title`, `name` or `id`, so the planner can refer to it.
+
+## The explorer agent
+
+The crawl is deterministic and cheap, and it stops at whatever links and probeable buttons reveal.
+After it, an LLM-driven agent takes a bounded number of steps (`QA_PILOT_EXPLORE_AGENT_STEPS`, default 12, `0` disables it) on what links alone cannot reach: signing in, opening menus and tabs, walking a wizard, following the operator's intent.
+Each step sends the model the current page's accessibility snapshot, the pages already known, and the actions taken so far, and it answers with one `Step` in the same schema the planner and runner use, or with `done`.
+The agent acts through the same `BrowserToolkit` as every other stage, so its locators are validated the same way, and every page it lands on is added to the site map and gated the same way a crawled page is.
+The model never sees credentials: it writes the literal tokens `{{USERNAME}}` and `{{PASSWORD}}` into the fields, the harness substitutes the real values right before the fill, and filled values are redacted out of the next snapshot.
+A password fill followed by a submit that leaves the login page is recorded as the site map's login steps, exactly as the heuristic login would have recorded them.
+Destructive labels are refused by the harness regardless of what the model asks for, and the agent is an add-on, never a gate: any failure leaves the crawled map intact.
 
 ## Getting past the login wall
 

@@ -106,6 +106,7 @@ A screenshot of the live UI during a fake-LLM run that stops at planning, showin
 | `ANTHROPIC_API_KEY` | required | Claude API key |
 | `QA_PILOT_MODEL` | `claude-opus-5` | model for every LLM call |
 | `QA_PILOT_HEADLESS` | `1` | `0` shows the agents' browser windows; a run opens one per planned flow, so watch the run screen instead |
+| `QA_PILOT_EXPLORE_AGENT_STEPS` | `12` | LLM-chosen exploration steps after the crawl (each is one LLM call); `0` disables the explorer agent |
 | `QA_PILOT_SCREENCAST` | `1` | `0` turns off the live viewport stream on the run screen |
 | `QA_PILOT_API_PORT` | `4000` | API port |
 | `QA_PILOT_OUTPUT` | `qa-pilot/output/` | where run artifacts go |

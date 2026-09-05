@@ -3,6 +3,7 @@ import { BrowserToolkit } from "../browser/toolkit.js";
 import { parseSnapshot } from "../browser/snapshot.js";
 import { outputDir, type Credentials, type FormInfo, type PageInfo, type RunState, type RunUpdate, type SiteMap, type Step } from "../state.js";
 import { BLOCKLIST, now, type NodeDeps } from "./deps.js";
+import { agentStepBudget, exploreWithAgent } from "./explore-agent.js";
 
 async function extractForms(page: Page, path: string): Promise<FormInfo[]> {
   const raw = await page.locator("form").evaluateAll((forms) =>
@@ -38,8 +39,8 @@ export function pathOf(url: string): string {
 }
 
 /** Gives client-side rendering a moment to finish; a page that never goes idle is read as it is. */
-async function settle(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+export async function settle(page: Page, timeout = 3000): Promise<void> {
+  await page.waitForLoadState("networkidle", { timeout }).catch(() => {});
 }
 
 type Link = { href: string; text: string };
@@ -74,8 +75,14 @@ const MAX_PROBES_PER_PAGE = 12;
 /** Probing costs a click and a reload each, so the whole crawl gets a ceiling too. */
 const MAX_PROBES_PER_CRAWL = 60;
 
-type ProbeBudget = { labels: Set<string>; spent: number };
-const newProbeBudget = (): ProbeBudget => ({ labels: new Set(), spent: 0 });
+type ProbeBudget = { labels: Set<string>; spent: number; bus?: NodeDeps["bus"] };
+const newProbeBudget = (bus?: NodeDeps["bus"]): ProbeBudget => ({ labels: new Set(), spent: 0, bus });
+
+/** How long a probed click gets to change the route. A router changes the URL synchronously
+ *  or within a tick; anything slower is a request the click fired, not navigation. */
+const PROBE_ROUTE_CHANGE_MS = 1500;
+/** Things a click can leave open that would cover the next control. */
+const OVERLAY_SELECTOR = '[role=dialog], [aria-modal="true"], [role=menu], [role=listbox], dialog[open]';
 
 /**
  * What to call a control: visible text first, then the attributes an app labels an icon-only
@@ -109,18 +116,37 @@ async function probeNav(kit: BrowserToolkit, page: Page, origin: string, path: s
     budget.labels.add(text);
     budget.spent++;
     probes++;
+    budget.bus?.log("explorer", `probing "${text}" on ${path}`);
+    const before = page.url();
+    let moved = false;
     try {
       await page.locator(NAV_PROBE_SELECTOR).nth(i).click({ timeout: 2000 });
-      await settle(page);
-      const landed = page.url();
-      if (landed.startsWith(origin) && pathOf(landed) !== path) found.push({ href: landed, text });
+      moved = await page
+        .waitForFunction((h) => location.href !== h, before, { timeout: PROBE_ROUTE_CHANGE_MS })
+        .then(() => true, () => false);
     } catch {
       /* not clickable right now: nothing to record */
     }
-    // Always go back, even when the route never changed: the click may have left a menu or an
-    // overlay open, and the next probe has to meet the page as it first loaded.
-    await kit.act(page, { action: "goto", target: path }).catch(() => {});
-    await settle(page);
+    const landed = page.url();
+    if (moved && landed.startsWith(origin) && pathOf(landed) !== path) {
+      found.push({ href: landed, text });
+      budget.bus?.log("explorer", `probe "${text}" -> ${pathOf(landed)}`);
+    }
+    // Reloading after every probe is what made a dashboard full of buttons look like a crawl
+    // stuck on one page: click, wait for idle, reload, wait for idle, a dozen times over. The
+    // page is only put back when the click actually took us somewhere or left something open
+    // that would cover the next control; a click that did neither costs an Escape and nothing else.
+    if (moved || !page.url().startsWith(origin)) {
+      await page.goto(new URL(path, kit.baseUrl).href, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await settle(page, PROBE_ROUTE_CHANGE_MS);
+    } else {
+      await page.keyboard.press("Escape").catch(() => {});
+      const covered = await page.locator(OVERLAY_SELECTOR).filter({ visible: true }).count().catch(() => 0);
+      if (covered > 0) {
+        await page.goto(new URL(path, kit.baseUrl).href, { waitUntil: "domcontentloaded" }).catch(() => {});
+        await settle(page, PROBE_ROUTE_CHANGE_MS);
+      }
+    }
   }
   return found;
 }
@@ -146,7 +172,7 @@ async function awaitPasswordField(page: Page, timeout = 2500): Promise<boolean> 
 
 const hasPasswordForm = (info: PageInfo): boolean => info.forms.some((f) => f.fields.some((x) => x.type === "password"));
 
-async function pageInfo(kit: BrowserToolkit, page: Page, origin: string, probed?: ProbeBudget): Promise<PageInfo> {
+export async function pageInfo(kit: BrowserToolkit, page: Page, origin: string, probed?: ProbeBudget): Promise<PageInfo> {
   const url = page.url();
   const path = pathOf(url);
   const links = await collectLinks(page);
@@ -251,7 +277,7 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   for (const p of preLoginPaths) queue.push({ path: p, depth: 1 });
   if (loginPath) queue.push({ path: loginPath, depth: 1 });
   const seen = new Set<string>();
-  const probed = newProbeBudget();
+  const probed = newProbeBudget(opts.bus);
   while (queue.length && Object.keys(pages).length < maxPages) {
     const { path, depth } = queue.shift()!;
     if (seen.has(path) || depth > maxDepth) continue;
@@ -284,10 +310,18 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   }
   await page.close();
 
-  // Gating: revisit each path unauthenticated. A route is gated either because the visit is
-  // bounced to the login page, or because the app answers in place with the login screen at the
-  // same URL - which is what a demo app usually does. A page that shows a password field to
-  // everyone (the login page itself, a register page) is not gated by that second rule.
+  await markGated(kit, origin, loginPath, pages);
+  return { origin, loginPath, loginSteps, pages };
+}
+
+/**
+ * Gating: revisits each path unauthenticated. A route is gated either because the visit is
+ * bounced to the login page, or because the app answers in place with the login screen at the
+ * same URL - which is what a demo app usually does. A page that shows a password field to
+ * everyone (the login page itself, a register page) is not gated by that second rule.
+ * Mutates `pages` in place; the caller may pass any subset of the site map.
+ */
+export async function markGated(kit: BrowserToolkit, origin: string, loginPath: string | null, pages: Record<string, PageInfo>): Promise<void> {
   const anon = await kit.newContext();
   const anonPage = await anon.newPage();
   for (const path of Object.keys(pages)) {
@@ -303,7 +337,6 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
     }
   }
   await anon.close();
-  return { origin, loginPath, loginSteps, pages };
 }
 
 export async function exploreNode(state: RunState, deps: NodeDeps): Promise<RunUpdate> {
@@ -311,6 +344,18 @@ export async function exploreNode(state: RunState, deps: NodeDeps): Promise<RunU
   const kit = await BrowserToolkit.launch({ headless: deps.headless, baseUrl: state.url, bus: deps.bus, runId: state.runId, agent: "explorer", screenshotDir: outputDir(state.runId) + "traces/explore" });
   try {
     const siteMap = await crawl(kit, { credentials: state.credentials, bus: deps.bus });
+    // The heuristic crawl is the cheap first pass; the agent then spends a bounded number of
+    // LLM-chosen actions on what links alone cannot reach. It is an add-on, never a gate: a
+    // failure here (no budget, no LLM, a refused prompt) leaves the crawled map intact.
+    const budget = agentStepBudget();
+    if (budget > 0) {
+      try {
+        const r = await exploreWithAgent(kit, siteMap, { llm: deps.llm, bus: deps.bus, credentials: state.credentials, intent: state.intent, maxSteps: budget });
+        deps.bus.log("explorer", `agent took ${r.steps} steps and found ${r.discovered.length} new pages`, { agent_steps: r.steps, discovered: r.discovered });
+      } catch (e) {
+        deps.bus.log("explorer", `agent exploration skipped: ${(e as Error).message.split("\n")[0]}`);
+      }
+    }
     deps.bus.decision({ node: "explore", reason: `discovered ${Object.keys(siteMap.pages).length} pages, ${Object.values(siteMap.pages).filter((p) => p.gated).length} gated`, evidence: Object.keys(siteMap.pages), next: "plan", at: now() });
     deps.bus.emit({ type: "node_end", node: "explore" });
     return { siteMap };
