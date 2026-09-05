@@ -9,11 +9,19 @@ import { resolve, relative, isAbsolute } from "node:path";
 import { z } from "zod";
 import { getBus } from "./events.js";
 import { getScreencast, type Frame } from "./browser/screencast.js";
-import { outputDir, RunInputSchema, type StartRunInput } from "./state.js";
-import { startRun, newRunId, submitReview, awaitingReview, rerunTest, rerunBlocker, ReviewSubmissionSchema } from "./run.js";
+import { outputDir, RunInputSchema, CredentialsSchema, type StartRunInput, type Step, type TestResult } from "./state.js";
+import {
+  startRun, newRunId, submitReview, awaitingReview, rerunTest, rerunBlocker, ReviewSubmissionSchema,
+  contextLoginSteps as liveLoginSteps, needsLogin, rerunTests as runRerunTests, specPath,
+} from "./run.js";
 import { defaultStore } from "./store/index.js";
-import type { ChatRecord, RunRecord, Store } from "./store/types.js";
+import type { ChatRecord, RerunPlanData, RunRecord, Store } from "./store/types.js";
 import { chatTurn, RunDraftSchema } from "./chat/turn.js";
+import { buildCatalogue } from "./copilot/catalogue.js";
+import { resolveRun, FINISHED } from "./copilot/resolve.js";
+import { copilotTurn, validateSelection, type CopilotDecision } from "./copilot/turn.js";
+import { planRerun, resultData, summariseRerun } from "./copilot/execute.js";
+import { hydrateLoginSteps, readRedactedLoginSteps } from "./copilot/login-steps.js";
 import { makeLlmClient, type LlmClient } from "./llm/client.js";
 import { authRoutes } from "./auth/routes.js";
 import { requireUser, type AuthEnv } from "./auth/middleware.js";
@@ -38,6 +46,13 @@ const ChatMessageSchema = z.object({
    */
   snapshot: RunDraftSchema.optional(),
 });
+
+const CopilotScopeSchema = z.object({ url: z.string().optional(), runId: z.string().optional() });
+const CopilotMessageSchema = z.object({ text: z.string() });
+const CopilotExecuteSchema = z.object({ credentials: CredentialsSchema.optional() });
+
+/** Chats with an execute in flight. One rerun per chat at a time; a second request answers 409. */
+const executing = new Set<string>();
 
 /** What a chat is called until the first turn names it. */
 const UNTITLED_CHAT = "New chat";
@@ -87,6 +102,10 @@ export function createApi(opts: {
   rerunBlocker?: (runId: string, testId: string, store: Store) => Promise<string | null>;
   /** Injectable so the chat tests do not call Anthropic. */
   llm?: LlmClient;
+  /** Injectable so the copilot tests do not spawn Playwright. */
+  rerunTests?: (runId: string, testIds: string[], loginSteps: Step[], store: Store) => Promise<TestResult[]>;
+  /** Injectable so the copilot tests can pretend a run's login is, or is not, still in memory. */
+  contextLoginSteps?: (runId: string) => Step[] | null;
 }) {
   const app = new Hono<AuthEnv>();
   const { store } = opts;
@@ -124,6 +143,7 @@ export function createApi(opts: {
   app.use("/report/*", requireUser(store));
   app.use("/chats", requireUser(store));
   app.use("/chats/*", requireUser(store));
+  app.use("/copilot/*", requireUser(store));
 
   // Built on first use rather than at boot: the Anthropic constructor needs a key, and the
   // API has to come up for /health and /auth on a machine that has none configured.
@@ -148,6 +168,12 @@ export function createApi(opts: {
   async function ownedChat(chatId: string, userId: string): Promise<ChatRecord | null> {
     const rec = await store.getChat(chatId);
     return rec && rec.userId === userId ? rec : null;
+  }
+
+  /** A copilot chat the caller owns. An intake chat is not served through the copilot routes. */
+  async function ownedCopilotChat(chatId: string, userId: string): Promise<ChatRecord | null> {
+    const chat = await ownedChat(chatId, userId);
+    return chat && chat.kind === "copilot" ? chat : null;
   }
 
   app.post("/run", async (c) => {
@@ -223,6 +249,149 @@ export function createApi(opts: {
       title ? { draft, title } : { draft },
     );
     return c.json({ reply: turn.reply, patch: turn.patch, needs: turn.needs, draft, ...(title ? { title } : {}) });
+  });
+
+  // ---------- Copilot ----------
+  //
+  // A chat that acts on finished runs. A turn is two calls: the decision, which resolves the
+  // run, catalogues its tests and asks the model what to do, and the execution, which runs
+  // the pending selection. Splitting them lets the person see what is about to run, and
+  // lets credentials travel only with the execute request when a rerun needs to sign in.
+
+  app.post("/copilot/chats", async (c) => {
+    const parsed = CopilotScopeSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const userId = c.get("user").id;
+    const scope: { url?: string; runId?: string } = {};
+    if (parsed.data.runId) {
+      // A scope naming a run the caller cannot see is refused up front, so the chat never
+      // exists with a foreign run in it.
+      const run = await ownedRun(parsed.data.runId, userId);
+      if (!run) return c.json({ error: "not found" }, 404);
+      scope.runId = run.id;
+      scope.url = run.url;
+    }
+    if (parsed.data.url) scope.url = parsed.data.url;
+    const now = new Date().toISOString();
+    const chat: ChatRecord = {
+      id: randomUUID(), userId, kind: "copilot", title: UNTITLED_CHAT,
+      createdAt: now, updatedAt: now, messages: [], draft: {}, scope,
+    };
+    await store.insertChat(chat);
+    return c.json({ chat });
+  });
+
+  app.get("/copilot/chats", async (c) => {
+    return c.json({ chats: await store.listChats(c.get("user").id, { kind: "copilot" }) });
+  });
+
+  app.post("/copilot/chats/:chatId/messages", async (c) => {
+    const chatId = c.req.param("chatId");
+    const userId = c.get("user").id;
+    const chat = await ownedCopilotChat(chatId, userId);
+    if (!chat) return c.json({ error: "not found" }, 404);
+
+    const parsed = CopilotMessageSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const text = parsed.data.text.trim();
+    if (!text) return c.json({ error: "a message cannot be empty" }, 400);
+
+    const at = new Date().toISOString();
+    const userMessage = { role: "user" as const, text, at };
+    const needsTitle = chat.title === UNTITLED_CHAT;
+
+    const run = await resolveRun(store, userId, chat.scope ?? {}, text);
+    if (!run) {
+      // Written here rather than by the model: there is nothing to show the model yet.
+      const reply = "There is no finished run to work from yet. Give me a run id, or the URL of the app you tested.";
+      const title = needsTitle ? text.slice(0, 40) : undefined;
+      await store.appendChatTurn(chatId, [userMessage, { role: "assistant", text: reply, at: new Date().toISOString() }], title ? { title } : {});
+      return c.json({ reply, action: "clarify", needs: [], ...(title ? { title } : {}) });
+    }
+
+    const catalogue = buildCatalogue(run);
+    let decision: CopilotDecision;
+    try {
+      decision = validateSelection(await copilotTurn(getLlm(), { catalogue, messages: chat.messages.concat(userMessage), needsTitle }), catalogue);
+    } catch (err) {
+      // Nothing is stored on a failed turn: a half-written exchange would leave the
+      // transcript claiming the assistant was asked something it never answered.
+      console.error("[copilot] turn failed:", err);
+      return c.json({ error: "the copilot could not answer that - try again" }, 502);
+    }
+
+    const title = needsTitle ? decision.title : undefined;
+    const scope = { url: run.url, runId: run.id };
+    let plan: RerunPlanData | undefined;
+    let needs: "credentials"[] = [];
+
+    if (decision.action === "rerun") {
+      const hasContext = (opts.contextLoginSteps ?? liveLoginSteps)(run.id) !== null;
+      const hasLoginFile = readRedactedLoginSteps(run.id) !== null;
+      const split = planRerun(decision.testIds, catalogue, { hasContext, hasLoginFile });
+      if (split.runnable.length === 0) {
+        decision = {
+          ...decision, action: "clarify", testIds: [],
+          reply: `None of those can run: ${split.blocked.map((b) => `${b.id} ${b.reason}`).join("; ")}.`,
+        };
+      } else {
+        plan = { kind: "rerun_plan", runId: run.id, testIds: split.runnable, blocked: split.blocked };
+        if (split.needsCredentials) needs = ["credentials"];
+      }
+    }
+
+    const assistant = { role: "assistant" as const, text: decision.reply, at: new Date().toISOString(), ...(plan ? { data: plan } : {}) };
+    await store.appendChatTurn(chatId, [userMessage, assistant], {
+      scope,
+      ...(title ? { title } : {}),
+      ...(plan ? { pending: { runId: plan.runId, testIds: plan.testIds } } : {}),
+    });
+    return c.json({ reply: decision.reply, action: decision.action, ...(plan ? { plan } : {}), needs, ...(title ? { title } : {}) });
+  });
+
+  app.post("/copilot/chats/:chatId/execute", async (c) => {
+    const chatId = c.req.param("chatId");
+    const userId = c.get("user").id;
+    const chat = await ownedCopilotChat(chatId, userId);
+    if (!chat) return c.json({ error: "not found" }, 404);
+    const parsed = CopilotExecuteSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    if (!chat.pending) return c.json({ error: "nothing to run - ask for a rerun first" }, 409);
+
+    // The check and the claim happen with no await between them, so two requests that both
+    // passed the ownership check cannot both proceed. Every path out of here releases the slot.
+    if (executing.has(chatId)) return c.json({ error: "a rerun is already in progress for this chat" }, 409);
+    executing.add(chatId);
+    try {
+      const { runId, testIds } = chat.pending;
+      const run = await ownedRun(runId, userId);
+      if (!run) return c.json({ error: "not found" }, 404);
+      if (!FINISHED.has(run.status)) return c.json({ error: "the run is still in progress" }, 409);
+
+      let loginSteps = (opts.contextLoginSteps ?? liveLoginSteps)(runId);
+      if (loginSteps === null) {
+        // A spec that vanished between the plan and now is skipped by the runner; it must not
+        // throw here.
+        const signsIn = testIds.some((id) => existsSync(specPath(runId, id)) && needsLogin(specPath(runId, id)));
+        if (!signsIn) loginSteps = [];
+        else {
+          const redacted = readRedactedLoginSteps(runId);
+          if (!redacted || !parsed.data.credentials) {
+            return c.json({ error: "these tests sign in; enter the target app's username and password to run them", needs: ["credentials"] }, 409);
+          }
+          // The credentials live in this handler for the length of the call and nowhere else.
+          loginSteps = hydrateLoginSteps(redacted, parsed.data.credentials);
+        }
+      }
+
+      const results = await (opts.rerunTests ?? runRerunTests)(runId, testIds, loginSteps, store);
+      const reply = summariseRerun(results, testIds);
+      const result = resultData(runId, results);
+      await store.appendChatTurn(chatId, [{ role: "assistant", text: reply, at: new Date().toISOString(), data: result }], { pending: null });
+      return c.json({ reply, result });
+    } finally {
+      executing.delete(chatId);
+    }
   });
 
   app.get("/runs", async (c) => {
