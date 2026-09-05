@@ -8,7 +8,7 @@ import { Button, Card, EmptyState, Icon, Keycap, Spinner, Wallpaper } from "@/co
 import { listRuns, type RunRecord } from "@/lib/api";
 
 function stats(runs: RunRecord[]) {
-  const finished = runs.filter((r) => r.testsPassed !== undefined);
+  const finished = runs.filter((r) => r.testsPassed != null);
   const passed = finished.reduce((n, r) => n + (r.testsPassed ?? 0), 0);
   const failed = finished.reduce((n, r) => n + (r.testsFailed ?? 0), 0);
   const total = passed + failed;

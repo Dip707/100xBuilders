@@ -83,7 +83,12 @@ function client(url: string): Promise<MongoClient> {
   let existing = clients.get(url);
   if (!existing) {
     existing = connectWithRetry(() =>
-      new MongoClient(url, { serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS }).connect(),
+      // ignoreUndefined keeps an optional field that a record simply does not carry - a run
+      // that stopped before the coverage gate has no coverageScore - out of the document
+      // rather than storing it as BSON null. RunRecord's optional fields are `number |
+      // undefined`, never null, and a null read back crashes any consumer that guards with
+      // `=== undefined`.
+      new MongoClient(url, { serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS, ignoreUndefined: true }).connect(),
     );
     clients.set(url, existing);
     existing.catch(() => clients.delete(url));
@@ -100,9 +105,19 @@ async function ensureIndexes(db: Db): Promise<void> {
   await db.collection<ChatDoc>("chats").createIndex({ userId: 1, updatedAt: -1 }, { name: "chats_by_user_recent" });
 }
 
+/**
+ * Documents written before `ignoreUndefined` was set still hold nulls where a field was
+ * absent, and rewriting them in place would touch a teammate's rows on the shared cluster.
+ * Dropping nulls on read costs nothing and makes every record satisfy RunRecord, whenever it
+ * was stored: no field of a run is meaningfully null.
+ */
+function withoutNulls(doc: Omit<RunDoc, "_id">): Omit<RunDoc, "_id"> {
+  return Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== null)) as Omit<RunDoc, "_id">;
+}
+
 function toRecord(doc: RunDoc): RunRecord {
   const { _id, ...rest } = doc;
-  return withDerivedStatus({ id: _id, ...rest });
+  return withDerivedStatus({ id: _id, ...withoutNulls(rest) });
 }
 
 export async function mongoStore(opts: { url?: string; db?: string } = {}): Promise<Store> {
@@ -164,7 +179,10 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
       }
     },
     async updateRun(id, patch) {
-      const { id: _ignored, ...fields } = patch as Partial<RunRecord> & { id?: string };
+      const { id: _ignored, ...rest } = patch as Partial<RunRecord> & { id?: string };
+      // Undefined values are dropped here rather than left to ignoreUndefined, so a patch of
+      // nothing but undefined is a no-op instead of an empty $set, which Mongo rejects.
+      const fields = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
       if (Object.keys(fields).length === 0) return;
       await runs.updateOne({ _id: id }, { $set: fields });
     },

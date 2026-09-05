@@ -15,7 +15,7 @@ export function SummaryCard({ run }: { run: RunRecord }) {
   return (
     <Card title="Summary">
       <div className="py-1">
-        {run.coverageScore !== undefined && (
+        {run.coverageScore != null && (
           <div className="border-b border-line py-3">
             <Meter value={run.coverageScore} label="Coverage" fill={run.coverageScore >= 0.75 ? "bg-pass" : "bg-flaky"} />
           </div>
@@ -24,13 +24,13 @@ export function SummaryCard({ run }: { run: RunRecord }) {
         <Row label="Plan iterations" value={run.planIterations ?? "-"} />
         <Row
           label="Tests"
-          value={run.testsPassed === undefined ? "-" : (
+          value={run.testsPassed == null ? "-" : (
             <><span className="text-pass">{run.testsPassed}</span>{run.testsFailed ? <span className="text-fail"> / {run.testsFailed}</span> : null}</>
           )}
         />
         <Row label="Heals accepted" value={run.healsAccepted ?? "-"} />
         <Row label="Defects escalated" value={<span className={run.defectsCount ? "text-defect" : undefined}>{run.defectsCount ?? "-"}</span>} />
-        <Row label="LLM calls" value={run.llmCalls === undefined ? "-" : `${run.llmCalls} / ${budget}`} />
+        <Row label="LLM calls" value={run.llmCalls == null ? "-" : `${run.llmCalls} / ${budget}`} />
         {run.partialReason && <Row label="Stopped because" value={<span className="font-sans text-flaky">{run.partialReason}</span>} />}
       </div>
     </Card>

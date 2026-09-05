@@ -72,6 +72,30 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     expect(await store.getRun("missing")).toBeNull();
   });
 
+  // A run that stops before the coverage gate summarises with `coverageScore: undefined`, and
+  // Mongo's driver writes an undefined `$set` value as BSON null unless told otherwise. A null
+  // reaching the UI crashed the run table on `coverageScore.toFixed`, because the guard there
+  // tests for undefined. Optional fields a run never set must read back absent from every store.
+  it("reads optional fields a run never set as undefined, not null", async () => {
+    await store.insertRun(runRec({ intent: undefined }));
+    await store.updateRun("run-1", { status: "partial", coverageScore: undefined, partialReason: undefined, testsPassed: 0 });
+
+    const got = (await store.getRun("run-1"))!;
+    expect(got.intent).toBeUndefined();
+    expect(got.coverageScore).toBeUndefined();
+    expect(got.partialReason).toBeUndefined();
+    expect(got.testsPassed).toBe(0);
+    expect((await store.listRuns("u1"))[0].coverageScore).toBeUndefined();
+  });
+
+  // A patch of nothing but undefined must stay a no-op rather than reaching the driver as an
+  // empty $set, which Mongo rejects.
+  it("ignores a patch whose every field is undefined", async () => {
+    await store.insertRun(runRec({ testsPassed: 2 }));
+    await store.updateRun("run-1", { coverageScore: undefined });
+    expect((await store.getRun("run-1"))!.testsPassed).toBe(2);
+  });
+
   it("lists a user's runs newest first and never another user's", async () => {
     await store.insertRun(runRec({ id: "run-old", startedAt: "2026-01-01T00:00:00.000Z" }));
     await store.insertRun(runRec({ id: "run-new", startedAt: "2026-02-01T00:00:00.000Z" }));
