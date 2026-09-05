@@ -167,6 +167,10 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
   const unresolved: string[] = [];
   try {
     for (const [index, flow] of flows.entries()) {
+      // Every flow starts from a clean session: sharing one context across the whole plan lets
+      // a `logged_in` flow's login bleed into the next flow's walk even when that flow's own
+      // precondition is `logged_out`, checking the wrong page entirely.
+      await kit.clearCookies();
       deps.bus.log("planner", `walking ${flow.id} on the live app`, { phase: "validating", flow: flow.id, title: flow.title, index: index + 1, total: flows.length });
       let result = await walkSafely(kit, flow, state.siteMap!, deps);
       let current: Flow = flow;

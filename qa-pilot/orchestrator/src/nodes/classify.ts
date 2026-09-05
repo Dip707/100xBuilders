@@ -157,6 +157,9 @@ async function gatherEvidence(state: RunState, deps: NodeDeps, failed: TestResul
       // A failure on an expect line happened after every step ran, so the whole flow is replayed.
       const replayTo = test.failingStep ?? (test.failingExpect !== undefined ? flow.steps.length : undefined);
       if (replayTo !== undefined) {
+        // Every flow starts from a clean session: one flow's login must never carry into the
+        // next flow's replay, which may have `logged_out` as its own precondition.
+        await kit.clearCookies();
         const page = await kit.newPage();
         try {
           if (flow.preconditions.includes("logged_in")) for (const s of state.siteMap?.loginSteps ?? []) await kit.act(page, s);

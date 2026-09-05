@@ -260,6 +260,20 @@ export class BrowserToolkit {
   }
 
   /**
+   * Wipes the session so the next `newPage()` starts logged out.
+   *
+   * A caller that checks several flows against one toolkit - the classifier replaying each
+   * failure in turn - shares one context and therefore one cookie jar across all of them. A
+   * flow with `logged_in` leaves a valid session on that context, and every flow checked after
+   * it inherits that session even when its own precondition is `logged_out`: the goto that
+   * should hit the sign-in page instead lands on the authenticated app, and the evidence
+   * gathered describes the wrong page entirely.
+   */
+  async clearCookies(): Promise<void> {
+    await this.context.clearCookies();
+  }
+
+  /**
    * Mirrors `page` to the run screen over CDP. Chromium keeps sending frames only while each
    * one is acknowledged, so every frame is acked even when the hub's rate limit drops it or
    * the page is not the active one. Failures here are never fatal: a broken screencast must
@@ -327,7 +341,16 @@ export class BrowserToolkit {
   async act(page: Page, step: Step): Promise<ResolvedLocator | null> {
     this.bus?.log(this.agent, `${step.action} ${step.role ?? ""} ${step.name ?? step.target ?? ""}`.trim());
     if (step.action === "goto") {
-      const url = step.target?.startsWith("http") ? step.target : this.baseUrl + (step.target ?? "/");
+      // A relative target is always a root-relative route ("/document-stores"), the same
+      // shape pathOf/filterLinks and every site-map key use - it must resolve against the
+      // origin, not against baseUrl verbatim. baseUrl is whatever URL the run was pointed at,
+      // which is very often not the origin itself: a user naming the app's login page as its
+      // URL (https://host/sso/login) turned every later "/document-stores" into
+      // "https://host/sso/login/document-stores" by plain string concatenation - a path the
+      // app's own router doesn't recognise, so it 404s. Every route this crawled beyond the
+      // first was reading that 404 page, not the app.
+      const origin = new URL(this.baseUrl).origin;
+      const url = step.target?.startsWith("http") ? step.target : new URL(step.target ?? "/", origin).toString();
       await gotoWithRetry(page, url, { log: (m) => this.bus?.log(this.agent, m) });
       await this.screenshot(page, `goto ${step.target ?? ""}`);
       return { locator: page.locator("body"), code: "", strategy: "css" };

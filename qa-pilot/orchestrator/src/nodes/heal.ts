@@ -179,6 +179,9 @@ export async function healNode(state: RunState, deps: NodeDeps): Promise<RunUpda
           ? { what: `STEP ${stepIdx}: ${step!.action} ${step!.role} "${step!.name}" intent: ${step!.intent ?? "(none)"}`, intent: step!.intent ?? step!.name!, replayTo: stepIdx! }
           : { what: `EXPECTATION ${expIdx}: ${exp!.type} ${exp!.role} "${exp!.name}" intent: assert this element is ${exp!.type === "not_visible" ? "absent" : "present"} after the flow`, intent: `${exp!.role} "${exp!.name}"`, replayTo: flow.steps.length };
 
+        // Every flow starts from a clean session: sharing one context across every healed
+        // target lets one flow's login bleed into the next flow's replay.
+        await kit.clearCookies();
         const page = await kit.newPage();
         try {
           if (flow.preconditions.includes("logged_in")) for (const s of state.siteMap?.loginSteps ?? []) await kit.act(page, s);

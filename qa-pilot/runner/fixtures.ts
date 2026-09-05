@@ -10,6 +10,16 @@ const loginSteps: Step[] = JSON.parse(process.env.QA_PILOT_LOGIN_STEPS ?? "[]");
 const FRAME_INTERVAL_MS = 200;
 
 /**
+ * Each page's true, unpatched `waitForLoadState`, recorded before the `page` fixture below
+ * redirects `'networkidle'` calls through `settle()`. `settle()` needs this: it waits on
+ * `networkidle` itself, and if it went through `page.waitForLoadState` after the redirect was
+ * installed it would call straight back into itself - infinite recursion, a stack overflow on
+ * every test. A page never registered here (none exist outside this fixture) falls back to its
+ * own current method.
+ */
+const rawWaitForLoadState = new WeakMap<Page, Page["waitForLoadState"]>();
+
+/**
  * Gives client-side rendering a moment to finish after a navigation or a click/press that may
  * trigger one (a submit, a nav link). `networkidle` alone is not a safe proxy for "the app has
  * hydrated": a SPA that keeps a websocket, a poll, or a telemetry beacon running never goes
@@ -18,8 +28,9 @@ const FRAME_INTERVAL_MS = 200;
  * content shows up, while the network-idle leg still wins fast on a page that genuinely settles.
  */
 async function settle(page: Page): Promise<void> {
+  const waitForLoadState = rawWaitForLoadState.get(page) ?? page.waitForLoadState.bind(page);
   await Promise.race([
-    page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {}),
+    waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {}),
     page.waitForSelector("form, input, button, a[href]", { timeout: 6000 }).catch(() => {}),
   ]);
   await dismissOnboardingOverlay(page);
@@ -112,6 +123,7 @@ export const test = base.extend<{ login: () => Promise<void> }>({
     // wait through the same bounded race as `settle()` makes any spec immune to this,
     // independent of what a future self-repair happens to write.
     const originalWaitForLoadState = page.waitForLoadState.bind(page);
+    rawWaitForLoadState.set(page, originalWaitForLoadState);
     page.waitForLoadState = (async (state?: Parameters<typeof originalWaitForLoadState>[0], options?: { timeout?: number }) => {
       if (state === "networkidle") return settle(page);
       return originalWaitForLoadState(state, options);
