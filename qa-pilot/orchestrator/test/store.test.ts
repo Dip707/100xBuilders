@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { memoryStore } from "../src/store/memory.js";
-import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, type Store, type RunRecord, type ChatRecord } from "../src/store/types.js";
+import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, type Store, type RunRecord, type ChatRecord, type ChatMessage } from "../src/store/types.js";
 
 function runRec(over: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -154,9 +154,14 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
   it("keeps only the newest CHAT_MESSAGE_CAP messages", async () => {
     await store.insertChat(chatRec({ id: "chat-cap" }));
     const at = new Date().toISOString();
-    for (let i = 0; i < CHAT_MESSAGE_CAP + 5; i++) {
-      await store.appendChatTurn("chat-cap", [{ role: "user", text: `m${i}`, at }], {});
-    }
+    const msgs = (from: number, to: number): ChatMessage[] =>
+      Array.from({ length: to - from }, (_, i) => ({ role: "user", text: `m${from + i}`, at }));
+    // Two turns rather than one message per turn: the cap still has to survive both a single
+    // oversized push and a later append onto an already-full transcript, and CHAT_MESSAGE_CAP
+    // sequential round-trips to a remote cluster times this out on latency alone.
+    await store.appendChatTurn("chat-cap", msgs(0, CHAT_MESSAGE_CAP), {});
+    await store.appendChatTurn("chat-cap", msgs(CHAT_MESSAGE_CAP, CHAT_MESSAGE_CAP + 5), {});
+
     const got = (await store.getChat("chat-cap"))!;
     expect(got.messages).toHaveLength(CHAT_MESSAGE_CAP);
     expect(got.messages[0].text).toBe("m5");
