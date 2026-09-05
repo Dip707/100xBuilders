@@ -41,7 +41,7 @@ export function useRunEvents(runId: string | null) {
       setEvents((prev) => [...prev, parsed]);
       if (parsed.type === "done") es.close();
     };
-    for (const t of ["node_start", "node_end", "decision", "agent_log", "screenshot", "test_result", "error", "done"]) es.addEventListener(t, push as EventListener);
+    for (const t of ["node_start", "node_end", "decision", "agent_log", "screenshot", "test_start", "test_result", "error", "done"]) es.addEventListener(t, push as EventListener);
     return () => es.close();
     // seenIds is re-derived from runId (see useMemo above), so it changes in
     // lockstep with runId and does not need to be listed separately.
