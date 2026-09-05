@@ -69,6 +69,22 @@ export const NAVIGATION_TIMEOUT_MS = navigationTimeoutMs();
 /** How long a screenshot may take. It is decoration, so it gets less than an element. */
 export const SCREENSHOT_TIMEOUT_MS = 3000;
 
+/**
+ * A fixed pause after every step, on top of whatever settle already waited for.
+ *
+ * The crawler moving through a real app faster than the app's own session bookkeeping can
+ * keep up with has shown up as being logged out mid-crawl: settle only waits for a concrete
+ * readiness signal (network idle, or some content existing), and a signal firing is not the
+ * same guarantee as the app having finished whatever it does after that - a session refresh,
+ * an analytics beacon, a debounced state write - before the very next action lands.
+ */
+export function postActionDelayMs(): number {
+  const raw = Number(process.env.QA_PILOT_POST_ACTION_DELAY_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 500;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 /** How long `settle` waits for a page to show real content before giving up on it. */
 export function settleTimeoutMs(): number {
   const raw = Number(process.env.QA_PILOT_SETTLE_TIMEOUT_MS);
@@ -370,6 +386,15 @@ export class BrowserToolkit {
       const origin = new URL(this.baseUrl).origin;
       const url = step.target?.startsWith("http") ? step.target : new URL(step.target ?? "/", origin).toString();
       await gotoWithRetry(page, url, { log: (m) => this.bus?.log(this.agent, m) });
+      // A fresh navigation can start from an empty DOM - domcontentloaded fires before a SPA
+      // has hydrated - so whatever step comes next (a fill, a click) must not run until
+      // something real has actually rendered. explore.ts's own crawl dodges this by calling
+      // pageInfo (which settles) between every goto and the next action, but every other
+      // caller replaying a flow's own steps - the planner's dry walk, the generator, the
+      // classifier, the healer - goes straight from this goto into whatever step.act comes
+      // next, with nothing else in between to settle it first.
+      await settle(page);
+      await sleep(postActionDelayMs());
       await this.screenshot(page, `goto ${step.target ?? ""}`);
       return { locator: page.locator("body"), code: "", strategy: "css" };
     }
@@ -403,6 +428,7 @@ export class BrowserToolkit {
       // cheaper wait, so a plain form fill is never taxed for a problem it doesn't have.
       if (step.action === "click" || step.action === "press") await settleAfterAction(page);
       else await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await sleep(postActionDelayMs());
       await this.screenshot(page, `${step.action} ${step.name ?? ""}`);
       return r;
     } catch (e) {
