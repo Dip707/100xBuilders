@@ -133,6 +133,12 @@ describe("run ownership", () => {
       listChats: () => Promise.reject(new Error("unused")),
       appendChatTurn: () => Promise.reject(new Error("unused")),
       deleteChat: () => Promise.reject(new Error("unused")),
+      saveIntegration: () => Promise.reject(new Error("unused")),
+      getIntegration: () => Promise.reject(new Error("unused")),
+      deleteIntegration: () => Promise.reject(new Error("unused")),
+      insertTicket: () => Promise.reject(new Error("unused")),
+      findTicket: () => Promise.reject(new Error("unused")),
+      listTickets: () => Promise.reject(new Error("unused")),
       listRuns: () => Promise.reject(new Error("unused")),
       close: () => Promise.resolve(),
     };

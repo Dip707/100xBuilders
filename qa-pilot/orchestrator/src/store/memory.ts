@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type RunRecord, type Store, type User } from "./types.js";
+import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, TicketTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type IntegrationRecord, type RunRecord, type Store, type TicketRecord, type User } from "./types.js";
 
 /**
  * The `Store` over plain Maps. Used by every test that is not specifically testing Mongo,
@@ -24,6 +24,9 @@ export function memoryStore(): Store {
   const sessions = new Map<string, { userId: string; expiresAt: Date }>();
   const runs = new Map<string, RunRecord>();
   const chats = new Map<string, ChatRecord>();
+  const integrations = new Map<string, IntegrationRecord>();
+  const tickets = new Map<string, TicketRecord>();
+  const ticketKey = (userId: string, runId: string, testId: string) => `${userId}/${runId}/${testId}`;
 
   return {
     async createUser(email, passwordHash) {
@@ -116,6 +119,33 @@ export function memoryStore(): Store {
     },
     async deleteChat(id) {
       chats.delete(id);
+    },
+
+    async saveIntegration(rec) {
+      integrations.set(rec.userId, { ...rec });
+    },
+    async getIntegration(userId) {
+      const rec = integrations.get(userId);
+      return rec ? { ...rec } : null;
+    },
+    async deleteIntegration(userId) {
+      integrations.delete(userId);
+    },
+
+    async insertTicket(rec) {
+      const key = ticketKey(rec.userId, rec.runId, rec.testId);
+      if (tickets.has(key)) throw new TicketTakenError(rec.runId, rec.testId);
+      tickets.set(key, { ...rec });
+    },
+    async findTicket(userId, runId, testId) {
+      const rec = tickets.get(ticketKey(userId, runId, testId));
+      return rec ? { ...rec } : null;
+    },
+    async listTickets(userId, runId) {
+      return [...tickets.values()]
+        .filter((t) => t.userId === userId && t.runId === runId)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((t) => ({ ...t }));
     },
 
     async close() { /* nothing to release */ },

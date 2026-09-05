@@ -103,6 +103,34 @@ export type RunRecord = {
   partialReason?: string;
 };
 
+export type TrackerProvider = "linear" | "jira";
+
+/**
+ * One tracker connection per user. `secret` is the AES-256-GCM ciphertext of the provider
+ * config (see integrations/crypto.ts); the store never sees a plaintext API key.
+ */
+export type IntegrationRecord = { userId: string; provider: TrackerProvider; label: string; secret: string; connectedAt: string };
+
+/** An issue filed in a tracker for one test of one run. */
+export type TicketRecord = {
+  id: string;
+  userId: string;
+  runId: string;
+  testId: string;
+  provider: TrackerProvider;
+  key: string;
+  url: string;
+  createdAt: string;
+};
+
+/** Thrown by `insertTicket` when this run and test already have a ticket for this user. */
+export class TicketTakenError extends Error {
+  constructor(runId: string, testId: string) {
+    super(`a ticket already exists for ${testId} in run ${runId}`);
+    this.name = "TicketTakenError";
+  }
+}
+
 /** Thrown by `createUser` so the route layer never sees a driver-specific duplicate-key error. */
 export class EmailTakenError extends Error {
   constructor(email: string) {
@@ -161,6 +189,14 @@ export interface Store {
    */
   appendChatTurn(id: string, messages: ChatMessage[], patch: ChatTurnPatch): Promise<void>;
   deleteChat(id: string): Promise<void>;
+
+  saveIntegration(rec: IntegrationRecord): Promise<void>;
+  getIntegration(userId: string): Promise<IntegrationRecord | null>;
+  deleteIntegration(userId: string): Promise<void>;
+
+  insertTicket(rec: TicketRecord): Promise<void>;
+  findTicket(userId: string, runId: string, testId: string): Promise<TicketRecord | null>;
+  listTickets(userId: string, runId: string): Promise<TicketRecord[]>;
 
   close(): Promise<void>;
 }

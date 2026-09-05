@@ -1,11 +1,14 @@
 import { MongoClient, type Collection, type Db, type Filter } from "mongodb";
 import { randomUUID } from "node:crypto";
-import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type RunRecord, type Store, type User } from "./types.js";
+import { CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, TicketTakenError, normaliseEmail, withDerivedStatus, type ChatRecord, type ChatSummary, type IntegrationRecord, type RunRecord, type Store, type TicketRecord, type User } from "./types.js";
 
 type UserDoc = { _id: string; email: string; passwordHash: string; createdAt: string };
 type SessionDoc = { _id: string; userId: string; createdAt: string; expiresAt: Date };
 type RunDoc = Omit<RunRecord, "id"> & { _id: string };
 type ChatDoc = Omit<ChatRecord, "id" | "kind"> & { _id: string; kind?: ChatRecord["kind"] };
+/** Keyed by user: one tracker connection each, so a save is a replace. */
+type IntegrationDoc = Omit<IntegrationRecord, "userId"> & { _id: string };
+type TicketDoc = Omit<TicketRecord, "id"> & { _id: string };
 
 const DUPLICATE_KEY = 11000;
 /** Case-insensitive comparison for the unique email index and for lookups. */
@@ -103,6 +106,8 @@ async function ensureIndexes(db: Db): Promise<void> {
   await db.collection<SessionDoc>("sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: "session_ttl" });
   await db.collection<RunDoc>("runs").createIndex({ userId: 1, startedAt: -1 }, { name: "runs_by_user_recent" });
   await db.collection<ChatDoc>("chats").createIndex({ userId: 1, updatedAt: -1 }, { name: "chats_by_user_recent" });
+  // The index is what makes a double-filed ticket impossible, not the pre-check in the route.
+  await db.collection<TicketDoc>("tickets").createIndex({ userId: 1, runId: 1, testId: 1 }, { unique: true, name: "ticket_per_test" });
 }
 
 /**
@@ -133,6 +138,8 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
   const sessions: Collection<SessionDoc> = db.collection("sessions");
   const runs: Collection<RunDoc> = db.collection("runs");
   const chats: Collection<ChatDoc> = db.collection("chats");
+  const integrations: Collection<IntegrationDoc> = db.collection("integrations");
+  const tickets: Collection<TicketDoc> = db.collection("tickets");
 
   return {
     async createUser(email, passwordHash) {
@@ -244,6 +251,40 @@ export async function mongoStore(opts: { url?: string; db?: string } = {}): Prom
     },
     async deleteChat(id) {
       await chats.deleteOne({ _id: id });
+    },
+
+    async saveIntegration(rec) {
+      const { userId, ...rest } = rec;
+      await integrations.replaceOne({ _id: userId }, rest, { upsert: true });
+    },
+    async getIntegration(userId) {
+      const doc = await integrations.findOne({ _id: userId });
+      if (!doc) return null;
+      const { _id, ...rest } = doc;
+      return { userId: _id, ...rest };
+    },
+    async deleteIntegration(userId) {
+      await integrations.deleteOne({ _id: userId });
+    },
+
+    async insertTicket(rec) {
+      const { id, ...rest } = rec;
+      try {
+        await tickets.insertOne({ _id: id, ...rest });
+      } catch (err) {
+        if ((err as { code?: number }).code === DUPLICATE_KEY) throw new TicketTakenError(rec.runId, rec.testId);
+        throw err;
+      }
+    },
+    async findTicket(userId, runId, testId) {
+      const doc = await tickets.findOne({ userId, runId, testId });
+      if (!doc) return null;
+      const { _id, ...rest } = doc;
+      return { id: _id, ...rest };
+    },
+    async listTickets(userId, runId) {
+      const docs = await tickets.find({ userId, runId }).sort({ createdAt: 1 }).toArray();
+      return docs.map(({ _id, ...rest }) => ({ id: _id, ...rest }));
     },
 
     async close() {

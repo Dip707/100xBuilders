@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { memoryStore } from "../src/store/memory.js";
-import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, type Store, type RunRecord, type ChatRecord, type ChatMessage } from "../src/store/types.js";
+import { withDerivedStatus, STALE_HEARTBEAT_MS, CHAT_MESSAGE_CAP, EmailTakenError, RunIdTakenError, TicketTakenError, type Store, type RunRecord, type ChatRecord, type ChatMessage } from "../src/store/types.js";
 
 function runRec(over: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -225,6 +225,27 @@ describe.each(factories)("store contract (%s)", (_name, make) => {
     chat = (await store.getChat("cp"))!;
     expect(chat.pending).toBeUndefined();
     expect(chat.scope).toEqual({ url: "http://localhost:3005", runId: "run-1" });
+  });
+
+  it("saves one integration per user, replaces it, never leaks it to another user, and deletes it", async () => {
+    await store.saveIntegration({ userId: "u1", provider: "linear", label: "Linear · Eng", secret: "c1", connectedAt: "2026-09-05T10:00:00.000Z" });
+    expect(await store.getIntegration("u1")).toMatchObject({ provider: "linear", secret: "c1" });
+    expect(await store.getIntegration("u2")).toBeNull();
+    await store.saveIntegration({ userId: "u1", provider: "jira", label: "Jira · ACME", secret: "c2", connectedAt: "2026-09-05T11:00:00.000Z" });
+    expect(await store.getIntegration("u1")).toMatchObject({ provider: "jira", secret: "c2", label: "Jira · ACME" });
+    await store.deleteIntegration("u1");
+    expect(await store.getIntegration("u1")).toBeNull();
+  });
+
+  it("stores one ticket per run and test, lists a run's tickets, and rejects a duplicate", async () => {
+    const t = { id: "t1", userId: "u1", runId: "run-1", testId: "checkout-001", provider: "linear" as const, key: "ENG-1", url: "https://linear.app/x/ENG-1", createdAt: "2026-09-05T10:00:00.000Z" };
+    await store.insertTicket(t);
+    expect(await store.findTicket("u1", "run-1", "checkout-001")).toEqual(t);
+    expect(await store.findTicket("u2", "run-1", "checkout-001")).toBeNull();
+    await store.insertTicket({ ...t, id: "t2", testId: "checkout-002", key: "ENG-2", createdAt: "2026-09-05T10:01:00.000Z" });
+    expect((await store.listTickets("u1", "run-1")).map((x) => x.key)).toEqual(["ENG-1", "ENG-2"]);
+    expect(await store.listTickets("u1", "run-2")).toEqual([]);
+    await expect(store.insertTicket({ ...t, id: "t3" })).rejects.toBeInstanceOf(TicketTakenError);
   });
 });
 
