@@ -75,6 +75,20 @@ describe("crawl on a single-page app", () => {
 });
 
 describe("crawl behind a login wall", () => {
+  it("recognises a login page whose form is rendered by script after the network goes quiet", async () => {
+    const { startKiosk } = await import("./helpers/kiosk.js");
+    const kiosk = await startKiosk({ loginRenderDelayMs: 1000 });
+    const kit = await BrowserToolkit.launch({ headless: true, baseUrl: kiosk.base });
+    try {
+      const map = await crawl(kit, { credentials: { username: "shopper", password: "hunter2" }, maxPages: 4 });
+      expect(map.loginPath).toBe("/");
+      expect(Object.keys(map.pages)).toEqual(expect.arrayContaining(["/", "/catalog.html"]));
+    } finally {
+      await kit.close();
+      await kiosk.stop();
+    }
+  }, 120_000);
+
   it("logs in from a landing page that is itself the login form, then explores what is behind it", async () => {
     const { startKiosk } = await import("./helpers/kiosk.js");
     const kiosk = await startKiosk();

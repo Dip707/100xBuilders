@@ -64,7 +64,17 @@ const STYLE = `<style>.cart { display: inline-block; width: 32px; height: 32px; 
 
 const html = (body: string) => `<!doctype html><html><head><title>Kiosk</title>${STYLE}</head><body>${body}</body></html>`;
 
-export async function startKiosk(): Promise<{ base: string; stop: () => Promise<void> }> {
+/**
+ * The way a client-rendered app serves its login page: the document arrives empty and the form
+ * is put into it by script some time after the network has gone quiet. A one-shot look for a
+ * password field right after load sees nothing here.
+ */
+const LATE_LOGIN_BODY = (delayMs: number) => `<div id="root"></div>
+<script>
+  setTimeout(function () { document.getElementById('root').innerHTML = ${JSON.stringify(LOGIN_BODY(""))}; }, ${delayMs});
+</script>`;
+
+export async function startKiosk(opts: { loginRenderDelayMs?: number } = {}): Promise<{ base: string; stop: () => Promise<void> }> {
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://kiosk");
     const signedIn = (req.headers.cookie ?? "").includes("kiosk=in");
@@ -84,7 +94,8 @@ export async function startKiosk(): Promise<{ base: string; stop: () => Promise<
     }
 
     if (url.pathname === "/") {
-      res.writeHead(200, { "content-type": "text/html" }).end(html(LOGIN_BODY("")));
+      const body = opts.loginRenderDelayMs ? LATE_LOGIN_BODY(opts.loginRenderDelayMs) : LOGIN_BODY("");
+      res.writeHead(200, { "content-type": "text/html" }).end(html(body));
       return;
     }
 

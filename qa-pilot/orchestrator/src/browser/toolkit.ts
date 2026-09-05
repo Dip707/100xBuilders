@@ -175,7 +175,11 @@ export class BrowserToolkit {
   async act(page: Page, step: Step): Promise<ResolvedLocator | null> {
     this.bus?.log(this.agent, `${step.action} ${step.role ?? ""} ${step.name ?? step.target ?? ""}`.trim());
     if (step.action === "goto") {
-      const url = step.target?.startsWith("http") ? step.target : this.baseUrl + (step.target ?? "/");
+      // Site-map routes are origin-absolute ("/products"), and the base URL a user enters is often
+      // a deep entry page ("https://app/sso/login"). Standard URL resolution sends the route to the
+      // origin; gluing the strings together produced "/sso/login/products", a 404 on every page.
+      // A fully qualified target resolves to itself.
+      const url = new URL(step.target ?? "/", this.baseUrl).href;
       await page.goto(url, { waitUntil: "domcontentloaded" });
       await this.screenshot(page, `goto ${step.target ?? ""}`);
       return { locator: page.locator("body"), code: "", strategy: "css" };

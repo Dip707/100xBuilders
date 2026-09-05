@@ -130,6 +130,20 @@ async function hasPasswordField(page: Page): Promise<boolean> {
   return (await page.locator("input[type=password]").count()) > 0;
 }
 
+/**
+ * Like hasPasswordField, but gives a client-rendered login page time to draw its form. A SPA
+ * puts the fields in the document well after the network goes quiet (Velogent takes up to
+ * ~1.6s), so a one-shot count right after load says "no login here" and the whole crawl stays
+ * outside the wall. Used only where a login page is expected; a page without one costs the wait.
+ */
+async function awaitPasswordField(page: Page, timeout = 2500): Promise<boolean> {
+  return page
+    .locator("input[type=password]")
+    .first()
+    .waitFor({ state: "attached", timeout })
+    .then(() => true, () => false);
+}
+
 const hasPasswordForm = (info: PageInfo): boolean => info.forms.some((f) => f.fields.some((x) => x.type === "password"));
 
 async function pageInfo(kit: BrowserToolkit, page: Page, origin: string, probed?: ProbeBudget): Promise<PageInfo> {
@@ -166,6 +180,8 @@ async function tryLogin(
   creds: Credentials,
 ): Promise<{ steps: Step[]; loginPage: PageInfo; landedPath: string } | null> {
   await kit.act(page, { action: "goto", target: loginPath });
+  // The form is what we came for; let a client-rendered page finish drawing it before reading.
+  await awaitPasswordField(page);
   const loginPage = await pageInfo(kit, page, origin);
   const form = loginPage.forms.find((f) => f.fields.some((x) => x.type === "password"));
   if (!form) return null;
@@ -202,14 +218,17 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   let loginPath: string | null = null;
   let loginSteps: Step[] = [];
 
+  // The URL a user enters is the app's entrance as they see it - often the login page itself
+  // ("/sso/login") rather than the root - so discovery starts there, and the root is crawled too.
+  const entryPath = pathOf(kit.baseUrl);
   // Discover a login page first so we can log in before the crawl.
-  await kit.act(page, { action: "goto", target: "/" });
+  await kit.act(page, { action: "goto", target: entryPath });
   const homeLinks = await collectLinks(page);
   const candidate = homeLinks.map((h) => pathOf(h.href)).find((p) => /log-?in|sign-?in/i.test(p));
   // A demo app often has no "Log in" link to follow because the landing page *is* the login form.
   // Without this the crawl never signs in, and everything behind the wall goes unexplored.
   if (candidate) loginPath = candidate;
-  else if (await hasPasswordField(page)) loginPath = pathOf(page.url());
+  else if (await awaitPasswordField(page)) loginPath = pathOf(page.url());
   // Pages reachable only from the unauthenticated nav (e.g. "/register") won't be linked once we're
   // logged in, so seed the queue with everything visible before login happens - filtered the same way
   // as the main loop (same-origin, not blocklisted, not a logout link).
@@ -225,7 +244,7 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
     } else opts.bus?.log("explorer", `login attempt at ${loginPath} did not leave the page`);
   }
 
-  const queue: { path: string; depth: number }[] = [{ path: "/", depth: 0 }];
+  const queue: { path: string; depth: number }[] = [{ path: entryPath, depth: 0 }, { path: "/", depth: 0 }];
   // Where the login dropped us is the entrance to the signed-in half of the app, and usually
   // nothing outside the wall links to it.
   if (landedPath) queue.push({ path: landedPath, depth: 0 });

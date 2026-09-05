@@ -188,3 +188,22 @@ describe("checkExpectation on pages with repeated elements", () => {
     await page.close();
   });
 });
+
+describe("BrowserToolkit goto with a pathed base URL", () => {
+  it("resolves site-map routes against the origin, not the entry page's path", async () => {
+    // The target URL a user enters is often the login page itself ("https://app/sso/login").
+    // Routes in the site map are origin-absolute ("/products"), so a goto must not glue them
+    // onto the entry path into "/sso/login/products".
+    const pathed = await BrowserToolkit.launch({ headless: true, baseUrl: shop.base + "/login" });
+    try {
+      const page = await pathed.newPage();
+      await pathed.act(page, { action: "goto", target: "/products" });
+      expect(new URL(page.url()).pathname).toBe("/products");
+      await pathed.act(page, { action: "goto", target: "/" });
+      expect(new URL(page.url()).pathname).toBe("/");
+      await page.close();
+    } finally {
+      await pathed.close();
+    }
+  });
+});
