@@ -4,12 +4,65 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repo currently contains no application code — just `README.md` and
-`problem_explanation_9dm9yp4f98s.pdf` (the hackathon problem statement). There
-is no build system, package manifest, test runner, or lint config yet. When
-the first code is added, update this file with the actual commands
-(build/lint/test/run) and the real architecture — don't rely on this section
-staying accurate once implementation starts.
+The submission lives in `qa-pilot/` — a TypeScript npm-workspace monorepo, fully
+implemented and green. `README.md` at the repo root is the **original PRD** and
+specifies a Python/FastAPI/LangGraph-Python stack that was never built; treat it
+as a historical spec, not a description of the code. `qa-pilot/README.md` and
+`qa-pilot/ARCHITECTURE.md` describe what actually exists.
+
+A second, independent implementation of the same problem exists on the unmerged
+branch `worktree-test-orchestration-agent` (Next.js + Claude Agent SDK, 4
+sub-agents, no healer). It is archived, not maintained;
+`docs/2026-09-04-test-orchestration-agent-session-summary.md` is its record.
+Do not confuse the two — root-level `app/`, `lib/`, `components/`, `fixtures/`
+belong to that branch, not to `qa-pilot`.
+
+**Watch out:** the primary checkout at the repo root may sit on a stale `main`
+that predates `qa-pilot` entirely. Verify with `git log --oneline -1` before
+concluding anything is missing.
+
+## Stack
+
+Node 22+, TypeScript throughout. Workspaces: `orchestrator` (LangGraph JS +
+Anthropic SDK + Playwright + Hono API), `runner` (Playwright Test config and
+fixtures), `targets/mini-shop` (the local demo target with chaos toggles),
+`ui` (Next.js). Run state is checkpointed in SQLite; runs and accounts persist
+to MongoDB when configured, in memory otherwise.
+
+## Commands
+
+All from `qa-pilot/`:
+
+| Command | What it does |
+|---|---|
+| `npm install` | install every workspace |
+| `npx playwright install chromium` | browser the pipeline drives |
+| `npm test` | full suite (orchestrator + mini-shop + ui), ~65s |
+| `npm run typecheck` | `tsc --noEmit` across orchestrator, runner, mini-shop |
+| `npm run shop` | demo target on :3005 |
+| `npm run api` | orchestrator API on :4000 |
+| `npm run ui` | live UI on :3000 |
+| `npm run qa-pilot -- run <url> [--intent ...]` | CLI run, no UI |
+| `./scripts/litellm-proxy.sh` | LiteLLM proxy on :4444, to run on a Gemini key |
+| `./demo.sh rename\|coupon\|reset` | chaos toggles on mini-shop for the healer/classifier demo |
+
+There is no lint step for the orchestrator; the UI has `eslint.config.mjs`.
+
+## Configuration
+
+`qa-pilot/.env` (gitignored; `.env.example` is the template). `ANTHROPIC_API_KEY`
+is the only hard requirement — every other variable has a working default.
+`QA_PILOT_MONGO_URL` is optional: without it the process warns and uses the
+in-memory store. Setting `QA_PILOT_LLM_BASE_URL` points the client at an
+Anthropic-compatible proxy and switches on compat mode, which stops sending
+`thinking` and `output_config` (a proxy with `drop_params` discards them) and
+renders the zod schema into the system prompt instead. Full table in
+`qa-pilot/README.md`.
+
+The LLM client owns its own transport-retry policy (the SDK's `maxRetries` is set
+to 0): jittered exponential backoff over ~30s, honouring `retry-after`, tuned by
+`QA_PILOT_LLM_MAX_RETRIES` / `_RETRY_BASE_MS` / `_RETRY_CAP_MS`. Transport retries
+are not charged to the LLM budget; validation retries are.
 
 ## What this repo is for
 
@@ -61,10 +114,22 @@ app, hand-written test scripts.
 
 ## Working in this repo
 
-- No stack has been chosen yet. When scaffolding the project, pick a stack
-  and record it here (commands to install, run the orchestrator, run each
-  sub-agent, and run any tests) so future sessions don't have to rediscover it.
-- Since the deliverable *is* an agent pipeline (Planner → gap-check →
-  Generator → Execute/Heal → Report), keep that stage boundary explicit in
-  whatever code structure gets built — the evaluation criteria specifically
+- The pipeline is a LangGraph state machine in `orchestrator/src/graph.ts`:
+  `explore → plan → evaluate_coverage → generate (fan-out) → run → classify →
+  heal → report`, with a re-plan loop below coverage 0.75 and a rerun loop for
+  flaky tests. Keep that stage boundary explicit — the evaluation criteria
   reward visible orchestration logic, not just working tests.
+- The plan node is registered as `planFlows` because LangGraph rejects a node
+  name that collides with a state channel, and `plan` is a channel. The
+  `guarded("plan", ...)` label keeps events and decisions reading `plan`.
+- **Never weaken the healer's guard.** `guardExpects` in `nodes/heal.ts` reduces
+  every `await expect(` line to a signature and rejects any patch that alters
+  one. A healer that can edit assertions is a bug-hider, and this is the single
+  most load-bearing invariant in the project.
+- Likewise, when the generator cannot validate an assertion live it emits the
+  original unchanged so the runner fails and the classifier can call the defect.
+  Do not "fix" that into passing.
+- The `Store` interface has two implementations and `test/store.test.ts` runs the
+  same contract against both. Add to the contract test when adding a method.
+- Tests use `FakeLlmClient` with canned answers; `npm test` needs no API key and
+  no database.
