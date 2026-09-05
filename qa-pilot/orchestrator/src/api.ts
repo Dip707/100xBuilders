@@ -27,6 +27,11 @@ import { authRoutes } from "./auth/routes.js";
 import { requireUser, type AuthEnv } from "./auth/middleware.js";
 import { artifactManifest } from "./runs/manifest.js";
 import { readSuite } from "./suite/bundle.js";
+import { ConnectSchema, liveTrackers, publicShape, TrackerError, type Trackers } from "./integrations/index.js";
+import { open as openSealed, seal, MISSING_SECRET } from "./integrations/crypto.js";
+import { buildTicket } from "./integrations/ticket.js";
+import type { Defect, Flow, RunResults } from "./state.js";
+import { readOutput } from "./output.js";
 import { zip } from "./suite/zip.js";
 
 // userId is not part of RunInputSchema (Ruling 1), so there is nothing to omit for it here;
@@ -53,6 +58,22 @@ const CopilotExecuteSchema = z.object({ credentials: CredentialsSchema.optional(
 
 /** Chats with an execute in flight. One rerun per chat at a time; a second request answers 409. */
 const executing = new Set<string>();
+
+/** Tickets being filed, keyed by run and test, so a double click cannot reach the tracker twice. */
+const filing = new Set<string>();
+
+/** Where the UI lives, for the link a ticket carries back to the case page. */
+const UI_ORIGIN = process.env.QA_PILOT_UI_ORIGIN ?? "http://localhost:3000";
+
+function readJsonOutput<T>(runId: string, name: string, fallback: T): T {
+  const raw = readOutput(runId, name);
+  if (raw === null) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
 
 /** What a chat is called until the first turn names it. */
 const UNTITLED_CHAT = "New chat";
@@ -106,9 +127,12 @@ export function createApi(opts: {
   rerunTests?: (runId: string, testIds: string[], loginSteps: Step[], store: Store) => Promise<TestResult[]>;
   /** Injectable so the copilot tests can pretend a run's login is, or is not, still in memory. */
   contextLoginSteps?: (runId: string) => Step[] | null;
+  /** Injectable so the integration tests never reach Linear or Jira. */
+  trackers?: Trackers;
 }) {
   const app = new Hono<AuthEnv>();
   const { store } = opts;
+  const trackers = opts.trackers ?? liveTrackers;
 
   app.use("*", cors({
     // credentials must be allowed for the session cookie to travel on fetch and on
@@ -144,6 +168,7 @@ export function createApi(opts: {
   app.use("/chats", requireUser(store));
   app.use("/chats/*", requireUser(store));
   app.use("/copilot/*", requireUser(store));
+  app.use("/integrations", requireUser(store));
 
   // Built on first use rather than at boot: the Anthropic constructor needs a key, and the
   // API has to come up for /health and /auth on a machine that has none configured.
@@ -399,6 +424,118 @@ export function createApi(opts: {
 
   app.get("/runs", async (c) => {
     return c.json({ runs: await store.listRuns(c.get("user").id) });
+  });
+
+  // ---- Tracker integrations --------------------------------------------------------------
+  //
+  // One Linear or Jira connection per user. The provider config is verified against the
+  // tracker, sealed, and stored; it is opened again only inside the ticket route, and the
+  // client only ever sees the provider and a label.
+
+  app.get("/integrations", async (c) => {
+    const rec = await store.getIntegration(c.get("user").id);
+    return c.json({ integration: rec ? publicShape(rec) : null });
+  });
+
+  app.put("/integrations", async (c) => {
+    const parsed = ConnectSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+    const userId = c.get("user").id;
+    let verified: { config: unknown; label: string };
+    try {
+      verified = await trackers.verify(parsed.data.provider, parsed.data);
+    } catch (err) {
+      if (err instanceof TrackerError) return c.json({ error: err.message }, 400);
+      console.error("[integrations] verify failed:", err);
+      return c.json({ error: `could not reach ${parsed.data.provider}; try again` }, 502);
+    }
+    let secret: string;
+    try {
+      secret = seal(verified.config);
+    } catch (err) {
+      if ((err as Error).message === MISSING_SECRET) return c.json({ error: MISSING_SECRET }, 500);
+      throw err;
+    }
+    const rec = { userId, provider: parsed.data.provider, label: verified.label, secret, connectedAt: new Date().toISOString() };
+    await store.saveIntegration(rec);
+    return c.json({ integration: publicShape(rec) });
+  });
+
+  app.delete("/integrations", async (c) => {
+    await store.deleteIntegration(c.get("user").id);
+    return c.body(null, 204);
+  });
+
+  app.get("/runs/:runId/tickets", async (c) => {
+    const userId = c.get("user").id;
+    const run = await ownedRun(c.req.param("runId"), userId);
+    if (!run) return c.json({ error: "not found" }, 404);
+    return c.json({ tickets: await store.listTickets(userId, run.id) });
+  });
+
+  /**
+   * Files one test of one run in the connected tracker. The body comes from the defect
+   * record the pipeline escalated when there is one, otherwise from the plan flow and the
+   * latest result; the UI only offers this on a `defect` verdict, but the route files
+   * whatever it is asked to for a test in the plan, so the cases page can reuse it.
+   */
+  app.post("/runs/:runId/tests/:testId/ticket", async (c) => {
+    const userId = c.get("user").id;
+    const run = await ownedRun(c.req.param("runId"), userId);
+    if (!run) return c.json({ error: "not found" }, 404);
+    const testId = c.req.param("testId");
+    const catalogue = buildCatalogue(run);
+    const entry = catalogue.tests.find((t) => t.id === testId);
+    const flow = readJsonOutput<Flow[]>(run.id, "plan.json", []).find((f) => f.id === testId);
+    if (!entry || !flow) return c.json({ error: "not found" }, 404);
+
+    const integration = await store.getIntegration(userId);
+    if (!integration) return c.json({ error: "connect Linear or Jira in Settings to file a ticket", needs: ["integration"] }, 412);
+
+    const existing = await store.findTicket(userId, run.id, testId);
+    if (existing) return c.json({ ticket: existing });
+
+    const slot = `${userId}/${run.id}/${testId}`;
+    if (filing.has(slot)) return c.json({ error: "this ticket is already being filed" }, 409);
+    filing.add(slot);
+    try {
+      let config: unknown;
+      try {
+        config = openSealed(integration.secret);
+      } catch (err) {
+        if ((err as Error).message === MISSING_SECRET) return c.json({ error: MISSING_SECRET }, 500);
+        return c.json({ error: "the stored tracker connection could not be read; reconnect it in Settings" }, 500);
+      }
+      const defect = readJsonOutput<Defect[]>(run.id, "defects.json", []).find((d) => d.flow === testId);
+      const latest = readJsonOutput<RunResults>(run.id, "results.json", { tests: [], at: "" });
+      const latestResult = (Array.isArray(latest.tests) ? latest.tests : []).find((t) => t.id === testId);
+      const body = buildTicket({
+        runId: run.id, url: run.url, testId, flow, defect,
+        verdict: entry.verdict ? { class: entry.verdict.class, confidence: entry.verdict.confidence } : undefined,
+        latest: latestResult ? { error: latestResult.error, at: latest.at } : undefined,
+        uiOrigin: UI_ORIGIN,
+      });
+      let created: { key: string; url: string };
+      try {
+        created = await trackers.createIssue(integration.provider, config, body);
+      } catch (err) {
+        if (err instanceof TrackerError) return c.json({ error: err.message }, 502);
+        console.error("[tickets] create failed:", err);
+        return c.json({ error: `could not reach ${integration.provider}; try again` }, 502);
+      }
+      const ticket = { id: randomUUID(), userId, runId: run.id, testId, provider: integration.provider, key: created.key, url: created.url, createdAt: new Date().toISOString() };
+      try {
+        await store.insertTicket(ticket);
+      } catch (err) {
+        // Two requests raced past the pre-check; the index kept one. Answer with the survivor.
+        const survivor = await store.findTicket(userId, run.id, testId);
+        if (survivor) return c.json({ ticket: survivor });
+        throw err;
+      }
+      return c.json({ ticket });
+    } finally {
+      filing.delete(slot);
+    }
   });
 
   app.get("/runs/:runId", async (c) => {
