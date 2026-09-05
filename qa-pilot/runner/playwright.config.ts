@@ -6,18 +6,22 @@ export default defineConfig({
   fullyParallel: true,
   workers: Number(process.env.QA_PILOT_WORKERS ?? 4),
   retries: 0,
-  timeout: 60_000,
-  expect: { timeout: 5_000 },
+  // Budgets are env-tunable because the same suite runs against a target on localhost and
+  // against a real site over the internet. The defaults assume the latter: one navigation
+  // may take up to QA_PILOT_NAV_TIMEOUT_MS, and a four-step flow makes several, so the
+  // per-test cap has to leave room for more than one of them.
+  timeout: Number(process.env.QA_PILOT_TEST_TIMEOUT_MS ?? 60_000),
+  expect: { timeout: Number(process.env.QA_PILOT_EXPECT_TIMEOUT_MS ?? 5_000) },
   reporter: [["json", { outputFile: process.env.QA_PILOT_JSON_REPORT ?? "./results.json" }]],
   use: {
     baseURL: process.env.QA_PILOT_BASE_URL ?? "http://localhost:3005",
     // Without these a click on a missing element waits out the whole test timeout and is
     // reported as timedOut with no error location: no failing step for the classifier, no
     // locator for the healer. A bounded action timeout turns it into a locator error instead.
-    actionTimeout: 10_000,
-    // A public target on a real network routinely needs more than 15 seconds for a page
-    // under parallel load; that used to fail half a run as "environment" for nothing.
-    navigationTimeout: 30_000,
+    actionTimeout: Number(process.env.QA_PILOT_ACTION_TIMEOUT_MS ?? 10_000),
+    // 30s, matching the explorer's own navigation budget: saucedemo.com answers in 4-6s,
+    // and a site having a slow moment is not the same thing as a broken test.
+    navigationTimeout: Number(process.env.QA_PILOT_NAV_TIMEOUT_MS ?? 30_000),
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     // Every test is recorded so the UI can replay it; the run node copies the file out

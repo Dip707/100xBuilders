@@ -9,6 +9,7 @@ import { BrowserToolkit } from "../src/browser/toolkit.js";
 import { initialState, type Flow, type SiteMap } from "../src/state.js";
 import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
+import { driftedFields } from "../src/nodes/plan.js";
 
 let shop: Awaited<ReturnType<typeof startShop>>;
 let siteMap: SiteMap;
@@ -129,5 +130,51 @@ describe("the model-facing plan schema", () => {
     const { PlanOutputSchema, RepairedFlowSchema } = await import("../src/nodes/plan.js");
     expect(Object.keys(PlanOutputSchema.shape.flows.element.shape)).not.toContain("visits");
     expect(Object.keys(RepairedFlowSchema.shape)).not.toContain("visits");
+  });
+});
+
+describe("driftedFields", () => {
+  it("ignores a steps-only repair and names every other field a repair moved", () => {
+    expect(driftedFields(good, { ...good, steps: [{ action: "goto", target: "/x" }] })).toEqual([]);
+    expect(driftedFields(good, { ...good, expected: [{ type: "visible", role: "alert", text_contains: "Welcome" }] })).toEqual(["expected"]);
+    expect(driftedFields(good, { ...good, id: "auth-000", title: "Something else", expected: [] })).toEqual(["id", "title", "expected"]);
+  });
+});
+
+describe("planNode repair guard", () => {
+  it("takes only the repaired steps and discards a repair's attempt to rewrite the expectations", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-plan-guard-")) + "/";
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    // A repair that fixes the unresolvable step (Teleport -> Sign in) but also swaps the
+    // expectation for one the page will never satisfy. Unguarded, that assertion reaches the
+    // runner, fails, and is reported as an application defect that does not exist.
+    const llm = new FakeLlmClient({
+      plan: { flows: [hallucinated] },
+      "plan-repair": () => ({
+        ...hallucinated,
+        title: "Rewritten by the repair",
+        expected: [{ type: "visible", role: "alert", text_contains: "Fabricated defect" }],
+        steps: [
+          { action: "goto", target: "/login", intent: "open login" },
+          { action: "click", role: "button", name: "Sign in", intent: "submit" },
+        ],
+      }),
+    });
+    const state = { ...initialState({ runId: "r", url: shop.base }), siteMap };
+    const update = await planNode(state, { bus, llm, headless: true });
+
+    const kept = (update.plan as Flow[]).find((f) => f.id === "auth-999");
+    expect(kept).toBeDefined();
+    // the repair's steps were taken...
+    expect(kept!.steps.map((x) => x.name)).toContain("Sign in");
+    // ...and nothing else was.
+    expect(kept!.expected).toEqual(hallucinated.expected);
+    expect(kept!.title).toBe(hallucinated.title);
+    expect(JSON.stringify(kept)).not.toContain("Fabricated defect");
+
+    const drift = bus.replay().filter((e) => e.type === "decision" && (e.message ?? "").includes("plan-repair also rewrote"));
+    expect(drift).toHaveLength(1);
+    expect(drift[0].message ?? "").toContain("title");
+    expect(drift[0].message ?? "").toContain("expected");
   });
 });

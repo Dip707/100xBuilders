@@ -4,11 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startShop } from "./helpers/shop.js";
 import { crawl } from "../src/nodes/explore.js";
-import { afterHeal, healNode, patchStep, guardExpects } from "../src/nodes/heal.js";
+import { afterHeal, healNode, patchStep, guardExpects, pickAssertionTarget, MIN_ASSERTION_NAME_SIMILARITY } from "../src/nodes/heal.js";
+import { nameSimilarity } from "../src/browser/snapshot.js";
 import { BrowserToolkit } from "../src/browser/toolkit.js";
 import { initialState, type Classification, type Flow, type HealRecord, type SiteMap, type TestResult } from "../src/state.js";
 import { EventBus } from "../src/events.js";
 import { FakeLlmClient } from "../src/llm/client.js";
+
+// The step healer now answers with an index into a numbered CANDIDATES list rather than a
+// free-text name, so a canned test answer has to find its target's number in that list
+// instead of stating the name directly. Mirrors what a real model does when reading the
+// rendered `renderCandidates` output embedded in the prompt input.
+function candidateIndex(input: string, name: string): number {
+  const line = input.split("\n").find((l) => l.includes(`"${name}"`));
+  if (!line) throw new Error(`candidate "${name}" not found in healer input:\n${input}`);
+  return Number(/^(\d+):/.exec(line)![1]);
+}
 
 const src = `import { test, expect } from 'x';
 // flow: checkout-002 | category: happy | source: explored
@@ -78,7 +89,7 @@ describe("healNode", () => {
     try {
       await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ renameCheckoutButton: true }) });
       const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
-      const llm = new FakeLlmClient({ heal: { role: "button", name: "Complete purchase", reason: "same submit control, renamed", confidence: 0.9 } });
+      const llm = new FakeLlmClient({ heal: (input: string) => ({ reason: "same submit control, renamed", candidate: candidateIndex(input, "Complete purchase"), confidence: 0.9 }) });
       const failed: TestResult = { id: "checkout-002", file, title: "Place order", status: "failed", error: "Timeout waiting for getByRole('button', { name: 'Place order' })", failingStep: 6, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
       const state = {
         ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow],
@@ -105,7 +116,7 @@ describe("healNode", () => {
     const file = process.env.QA_PILOT_OUTPUT + "r/tests/checkout-002.spec.ts";
     writeFileSync(file, src);
     const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
-    const llm = new FakeLlmClient({ heal: { role: "button", name: "Nothing", reason: "none", confidence: 0 } });
+    const llm = new FakeLlmClient({ heal: { reason: "none", candidate: 0, confidence: 0 } });
     const failed: TestResult = { id: "checkout-002", file, title: "Place order", status: "failed", error: "x", failingStep: 6, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
     const state = { ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow], results: { tests: [failed], at: "" }, classifications: [{ test: "checkout-002", class: "script" as const, confidence: 0.9, evidence: [], action: "heal" as const }] };
     const update = await healNode(state, { bus, llm, headless: true });
@@ -114,12 +125,32 @@ describe("healNode", () => {
     expect(update.defects).toHaveLength(1);
   }, 120_000);
 
+  it("reclassifies as defect instead of throwing when the healer names an out-of-range candidate", async () => {
+    // The step healer can only choose an index into the numbered candidate list it was shown,
+    // but a model can still hallucinate a number past the end of that list. That must land as
+    // an ordinary defect classification - never an uncaught index into `undefined`.
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-heal-oor-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
+    const file = process.env.QA_PILOT_OUTPUT + "r/tests/checkout-002.spec.ts";
+    writeFileSync(file, src);
+    const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+    const llm = new FakeLlmClient({ heal: { reason: "the checkout button moved", candidate: 9999, confidence: 0.9 } });
+    const failed: TestResult = { id: "checkout-002", file, title: "Place order", status: "failed", error: "x", failingStep: 6, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
+    const state = { ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow], results: { tests: [failed], at: "" }, classifications: [{ test: "checkout-002", class: "script" as const, confidence: 0.9, evidence: [], action: "heal" as const }] };
+    const update = await healNode(state, { bus, llm, headless: true });
+    expect(update.testsToRun).toEqual([]);
+    expect((update.classifications as Classification[])[0].class).toBe("defect");
+    expect(update.defects).toHaveLength(1);
+    expect(JSON.stringify(update.defects)).toContain("out of range");
+    expect(readFileSync(file, "utf8")).toBe(src);
+  }, 120_000);
+
   it("isolates a per-target failure (missing spec file) instead of letting it escape healNode", async () => {
     process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-heal3-")) + "/";
     mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
     const bogusFile = process.env.QA_PILOT_OUTPUT + "r/tests/does-not-exist.spec.ts";
     const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
-    const llm = new FakeLlmClient({ heal: { role: "button", name: "Complete purchase", reason: "same submit control, renamed", confidence: 0.9 } });
+    const llm = new FakeLlmClient({ heal: { reason: "same submit control, renamed", candidate: 0, confidence: 0.9 } });
     const failed: TestResult = { id: "checkout-002", file: bogusFile, title: "Place order", status: "failed", error: "x", failingStep: 6, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
     const classification: Classification = { test: "checkout-002", class: "script", confidence: 0.9, evidence: [], action: "heal" };
     const state = { ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow], results: { tests: [failed], at: "" }, classifications: [classification] };
@@ -169,6 +200,17 @@ describe("guardExpects on assertion targets", () => {
   });
 });
 
+describe("MIN_ASSERTION_NAME_SIMILARITY", () => {
+  // guardExpects compares signatures with the target's name stripped, so on its own it would
+  // accept "Log In" -> "Sign Up". This threshold is what keeps that swap out.
+  it("admits cosmetic renames and rejects semantic swaps", () => {
+    for (const [a, b] of [["Log In", "Log in"], ["Add to cart", "Add to Cart"], ["Sign In", "Sign in"], ["Place Order", "Place order"]])
+      expect(nameSimilarity(a, b)).toBeGreaterThanOrEqual(MIN_ASSERTION_NAME_SIMILARITY);
+    for (const [a, b] of [["Log In", "Sign Up"], ["Pay now", "Save for later"], ["Place Order", "Cancel Order"], ["Continue", "Cancel"], ["Place order", "Complete purchase"]])
+      expect(nameSimilarity(a, b)).toBeLessThan(MIN_ASSERTION_NAME_SIMILARITY);
+  });
+});
+
 const catalogueSrc = `import { test, expect } from 'x';
 // flow: products-001 | category: happy | source: explored
 test('Catalogue lists products', async ({ page }) => {
@@ -186,21 +228,29 @@ const catalogueFlow: Flow = {
 const catalogueError = `Error: expect(locator).toBeVisible() failed\n\nLocator: getByRole('heading', { name: 'Product catalogue' })\nExpected: visible\nTimeout: 5000ms\nError: element(s) not found`;
 
 describe("healNode on a failing assertion", () => {
-  function setup(prefix: string, suggestion: unknown) {
+  // `asserted` is the accessible name the spec and the plan claim the heading has; the live
+  // shop heading is "Products". How far `asserted` sits from it decides whether the healer is
+  // allowed to re-target or must escalate.
+  function setup(prefix: string, suggestion: unknown, asserted = "Product catalogue") {
     process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), prefix)) + "/";
     mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
     const file = process.env.QA_PILOT_OUTPUT + "r/tests/products-001.spec.ts";
-    writeFileSync(file, catalogueSrc);
+    const src = catalogueSrc.replace("Product catalogue", asserted);
+    writeFileSync(file, src);
     const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
     const llm = new FakeLlmClient({ heal: suggestion });
-    const failed: TestResult = { id: "products-001", file, title: "Catalogue lists products", status: "failed", error: catalogueError, failingExpect: 1, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
-    const state = { ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [catalogueFlow], results: { tests: [failed], at: "" }, classifications: [{ test: "products-001", class: "script" as const, confidence: 0.9, evidence: [], action: "heal" as const }] };
-    return { file, bus, llm, state };
+    const failed: TestResult = { id: "products-001", file, title: "Catalogue lists products", status: "failed", error: catalogueError.replace("Product catalogue", asserted), failingExpect: 1, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
+    const flow: Flow = { ...catalogueFlow, expected: [catalogueFlow.expected[0], { ...catalogueFlow.expected[1], name: asserted }] };
+    const state = { ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [flow], results: { tests: [failed], at: "" }, classifications: [{ test: "products-001", class: "script" as const, confidence: 0.9, evidence: [], action: "heal" as const }] };
+    return { file, src, bus, llm, state };
   }
 
-  it("re-targets the assertion to the renamed heading and keeps the matcher", async () => {
-    const { file, bus, llm, state } = setup("qa-heal-exp-", { role: "heading", name: "Products", reason: "the catalogue heading is titled Products", confidence: 0.9 });
+  it("re-targets the assertion across a cosmetic rename and keeps the matcher", async () => {
+    // "PRODUCTS" -> "Products" is a pure casing difference (similarity 1.0): the assertion
+    // still proves the same heading is on the page, so re-targeting it is a locator fix.
+    const { file, bus, llm, state } = setup("qa-heal-exp-", { role: "heading", name: "Products", reason: "the catalogue heading is titled Products", confidence: 0.9 }, "PRODUCTS");
     const update = await healNode(state, { bus, llm, headless: true });
+    expect(llm.calls).toBe(0);
     expect(update.testsToRun).toEqual(["products-001"]);
     const record = (update.healLog as HealRecord[])[0];
     expect(record.accepted).toBe(true);
@@ -208,17 +258,24 @@ describe("healNode on a failing assertion", () => {
     expect(record.after).toBe("await expect(page.getByRole('heading', { name: 'Products' })).toBeVisible();");
     const patched = readFileSync(file, "utf8");
     expect(patched).toContain("await expect(page.getByRole('heading', { name: 'Products' })).toBeVisible();");
-    expect(patched).not.toContain("Product catalogue");
+    expect(patched).not.toContain("PRODUCTS");
     expect(patched).toContain("await expect(page).toHaveURL(/\\/products/);");
   }, 120_000);
 
-  it("refuses to re-target an assertion to a different role and escalates instead", async () => {
-    const { file, bus, llm, state } = setup("qa-heal-exp2-", { role: "link", name: "Products", reason: "there is a Products link", confidence: 0.9 });
+  it("refuses to re-target an assertion across a semantic rename and escalates instead", async () => {
+    // "Product catalogue" -> "Products" (similarity 0.35) is the false-heal shape: same role,
+    // live-visible, and identical under expectSignature, but it no longer proves the page has
+    // the heading the plan asked about. The suite must not absorb that silently.
+    const { file, src, bus, llm, state } = setup("qa-heal-exp3-", { role: "heading", name: "Products", reason: "the catalogue heading is titled Products", confidence: 0.9 });
     const update = await healNode(state, { bus, llm, headless: true });
+    expect(llm.calls).toBe(0);
     expect(update.testsToRun).toEqual([]);
     expect((update.classifications as Classification[])[0].class).toBe("defect");
-    expect(readFileSync(file, "utf8")).toBe(catalogueSrc);
+    expect(JSON.stringify(update.defects)).toContain("name similarity");
+    expect(readFileSync(file, "utf8")).toBe(src);
   }, 120_000);
+
+
 });
 
 describe("healNode verifies against the expectations the generator actually emitted", () => {
@@ -230,7 +287,7 @@ describe("healNode verifies against the expectations the generator actually emit
     try {
       await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ renameCheckoutButton: true }) });
       const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
-      const llm = new FakeLlmClient({ heal: { role: "button", name: "Complete purchase", reason: "same submit control, renamed", confidence: 0.9 } });
+      const llm = new FakeLlmClient({ heal: (input: string) => ({ reason: "same submit control, renamed", candidate: candidateIndex(input, "Complete purchase"), confidence: 0.9 }) });
       const failed: TestResult = { id: "checkout-002", file, title: "Place order", status: "failed", error: "locator.click: Timeout waiting for getByRole('button', { name: 'Place order' })", failingStep: 6, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
       // The plan guessed a URL the app never reaches; the generator replaced it with what it saw.
       const planned: Flow = { ...flow, expected: [{ type: "url_contains", value: "/orders" }] };
@@ -247,4 +304,89 @@ describe("healNode verifies against the expectations the generator actually emit
       await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ renameCheckoutButton: false }) });
     }
   }, 120_000);
+});
+
+const assertionSrc = `import { test, expect } from 'x';
+// flow: checkout-003 | category: happy | source: explored
+test('Checkout control present', async ({ page }) => {
+  // step 0
+  await page.goto('/checkout');
+  await expect(page.getByRole('button', { name: 'Place order' })).toBeVisible();
+});
+`;
+
+const assertionFlow: Flow = {
+  id: "checkout-003", title: "Checkout control present", category: "happy", priority: "P1", preconditions: [], source: "explored",
+  steps: [{ action: "goto", target: "/checkout", intent: "open checkout" }],
+  expected: [{ type: "visible", role: "button", name: "Place order" }],
+};
+
+describe("healNode assertion guard", () => {
+  it("refuses to re-target an assertion onto a semantically different element and escalates instead", async () => {
+    process.env.QA_PILOT_OUTPUT = mkdtempSync(join(tmpdir(), "qa-heal-assert-")) + "/";
+    mkdirSync(process.env.QA_PILOT_OUTPUT + "r/tests", { recursive: true });
+    const file = process.env.QA_PILOT_OUTPUT + "r/tests/checkout-003.spec.ts";
+    writeFileSync(file, assertionSrc);
+    try {
+      await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ renameCheckoutButton: true }) });
+      const bus = new EventBus("r", process.env.QA_PILOT_OUTPUT + "r/");
+      // The healer names a real, same-role, live-visible element, so it clears every other
+      // check in the branch. Only the name-similarity gate stands between this suggestion and
+      // a green suite on an app that no longer has the control the test asserts.
+      const llm = new FakeLlmClient({ heal: { role: "button", name: "Complete purchase", reason: "the submit control was renamed", confidence: 0.95 } });
+      const failed: TestResult = { id: "checkout-003", file, title: "Checkout control present", status: "failed", error: "expect(getByRole('button', { name: 'Place order' })).toBeVisible() failed", failingExpect: 0, network: [], consoleErrors: [], pageErrors: [], durationMs: 1 };
+      const state = {
+        ...initialState({ runId: "r", url: shop.base }), siteMap, plan: [assertionFlow],
+        results: { tests: [failed], at: "" },
+        classifications: [{ test: "checkout-003", class: "script" as const, confidence: 0.9, evidence: [], action: "heal" as const }],
+      };
+      const update = await healNode(state, { bus, llm, headless: true });
+      expect(llm.calls).toBe(0);
+      expect(update.testsToRun).toEqual([]);
+      expect((update.classifications as Classification[])[0].class).toBe("defect");
+      expect((update.classifications as Classification[])[0].action).toBe("escalate");
+      expect(update.defects).toHaveLength(1);
+      expect(JSON.stringify(update.defects)).toContain("name similarity");
+      expect(readFileSync(file, "utf8")).toBe(assertionSrc);
+    } finally {
+      await fetch(shop.base + "/__chaos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ renameCheckoutButton: false }) });
+    }
+  }, 120_000);
+});
+
+describe("pickAssertionTarget", () => {
+  const snapshot = ['- heading "Products"', '- link "Products"', '- button "Log In"', '- heading "Cart"'].join("\n");
+
+  it("picks the same-role near-copy and reports the similarity it turned on", () => {
+    const got = pickAssertionTarget(snapshot, { role: "heading", name: "PRODUCTS" });
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    expect(got.suggestion.role).toBe("heading");
+    expect(got.suggestion.name).toBe("Products");
+    expect(got.suggestion.confidence).toBe(1);
+  });
+
+  it("never crosses roles, even when another role carries the exact name", () => {
+    // A link named "Products" is present, but the assertion is about a heading. Re-targeting
+    // across roles would change what the test proves, so this escalates rather than healing.
+    const got = pickAssertionTarget('- link "Products"\n- button "Products"', { role: "heading", name: "Products" });
+    expect(got.ok).toBe(false);
+    if (got.ok) return;
+    expect(got.why).toContain("no heading element remains");
+  });
+
+  it("escalates on a semantic rename and names the number that blocked it", () => {
+    const got = pickAssertionTarget(snapshot, { role: "heading", name: "Product catalogue" });
+    expect(got.ok).toBe(false);
+    if (got.ok) return;
+    expect(got.why).toContain("name similarity");
+    expect(got.why).toContain("Products");
+  });
+
+  it("escalates when the role has vanished from the page entirely", () => {
+    const got = pickAssertionTarget('- button "Log In"', { role: "heading", name: "Products" });
+    expect(got.ok).toBe(false);
+    if (got.ok) return;
+    expect(got.why).toContain("no heading element remains");
+  });
 });

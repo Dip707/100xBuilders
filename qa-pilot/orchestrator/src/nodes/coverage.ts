@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CoverageVerdict, Flow, RunState, RunUpdate, SiteMap } from "../state.js";
 import { readOutput, writeOutput } from "../output.js";
+import { nameSimilarity } from "../browser/snapshot.js";
 import { now, type NodeDeps } from "./deps.js";
 
 export const PrdRequirementsSchema = z.object({ requirements: z.array(z.string()) });
@@ -8,6 +9,46 @@ export const PrdMatrixSchema = z.object({ matrix: z.array(z.object({ requirement
 
 export const COVERAGE_THRESHOLD = 0.75;
 export const MAX_PLAN_ITERATIONS = 3;
+/** How much a re-plan must move the score to be worth another planning call. */
+export const STALL_EPSILON = 0.01;
+
+/**
+ * Whether re-planning has stopped paying for itself.
+ *
+ * The gap loop assumes each iteration tells the planner something it did not know. When two
+ * consecutive iterations land on the same score, that assumption has failed: the planner has
+ * converged on what the site map lets it see, and further iterations spend a `plan` call - the
+ * most expensive one in the pipeline - to reproduce the same gaps. Stopping early and carrying
+ * the unclosed gaps into the report is both cheaper and more honest than grinding to
+ * MAX_PLAN_ITERATIONS and presenting the result as if the loop had finished its work.
+ */
+export function replanStalled(scores: number[]): boolean {
+  if (scores.length < 2) return false;
+  return scores[scores.length - 1] - scores[scores.length - 2] <= STALL_EPSILON;
+}
+
+/**
+ * Everything a flow says about itself: its title, the elements its steps touch, and what it
+ * asserts. Intent coverage used to look only at titles, which scores a flow named "Place order"
+ * as no coverage at all for the intent "focus on checkout" even though every one of its steps
+ * runs through /checkout.
+ */
+function flowText(f: Flow): string {
+  return [
+    f.title,
+    ...f.steps.map((s) => `${s.name ?? ""} ${s.target ?? ""}`),
+    ...f.expected.map((e) => `${e.name ?? ""} ${e.text_contains ?? ""} ${e.value ?? ""}`),
+  ].join(" ").toLowerCase();
+}
+
+/** A scoping word counts as covered by a substring hit, or by a near-miss on any single token. */
+function intentCovered(word: string, flows: Flow[]): boolean {
+  return flows.some((f) => {
+    const text = flowText(f);
+    if (text.includes(word)) return true;
+    return text.split(/[^a-z0-9]+/).some((tok) => tok.length > 3 && nameSimilarity(tok, word) >= 0.8);
+  });
+}
 
 type Gap = CoverageVerdict["gaps"][number];
 
@@ -76,10 +117,10 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
   if (opts.intent) {
     const words = [...new Set(opts.intent.toLowerCase().split(/[^a-z0-9]+/))].filter((w) => w.length > 3 && !INTENT_FILLER.has(w));
     if (words.length) {
-      const hit = words.filter((w) => flows.some((f) => f.title.toLowerCase().includes(w)));
+      const hit = words.filter((w) => intentCovered(w, flows));
       checks.intent = hit.length / words.length;
       weights.intent = 0.1;
-      for (const w of words) if (!hit.includes(w)) gaps.push({ kind: "intent_uncovered", target: w, suggest: `add a flow whose title covers "${w}"` });
+      for (const w of words) if (!hit.includes(w)) gaps.push({ kind: "intent_uncovered", target: w, suggest: `no flow touches "${w}" in its title, steps or assertions; add one` });
     }
   }
 
@@ -103,6 +144,18 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
   checks.mix = Math.min(1, mix / 0.4);
   weights.mix = 0.15;
   if (mix < 0.4) gaps.push({ kind: "category_mix", suggest: `only ${(mix * 100).toFixed(0)}% of flows are negative/edge/error_state; add more` });
+
+  // 7. error states. `mix` counts error_state flows towards a ratio, so a plan can satisfy it
+  // with negative flows alone and never once ask what the app does when a request fails. That
+  // is a different question from invalid input: a validation error is the app working, a failed
+  // request is the app under duress, and only the second reveals whether a failure is surfaced
+  // or silently swallowed. Scored only where there is something to fail - a form to submit.
+  if (forms.length) {
+    const hasErrorState = flows.some((f) => f.category === "error_state");
+    checks.errors = hasErrorState ? 1 : 0;
+    weights.errors = 0.15;
+    if (!hasErrorState) gaps.push({ kind: "missing_error_state", suggest: "no flow exercises a failing request; add one that drives a server or network error and verifies the app surfaces it rather than appearing to succeed" });
+  }
 
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
   const score = Object.entries(checks).reduce((acc, [k, v]) => acc + v * weights[k], 0) / totalWeight;
@@ -164,8 +217,15 @@ export async function coverageNode(state: RunState, deps: NodeDeps): Promise<Run
 export function afterCoverage(state: RunState, deps: NodeDeps): "generate" | "plan" {
   const score = state.coverage!.score;
   const gaps = state.coverage!.gaps.map((g) => `${g.kind} ${g.target ?? g.requirement ?? ""}`.trim());
-  if (score >= COVERAGE_THRESHOLD || state.planIterations >= MAX_PLAN_ITERATIONS) {
-    deps.bus.decision({ node: "evaluate_coverage", reason: score >= COVERAGE_THRESHOLD ? `coverage ${score} >= ${COVERAGE_THRESHOLD}` : `coverage ${score} < ${COVERAGE_THRESHOLD} but ${state.planIterations} iterations reached`, evidence: gaps, next: "generate", at: now() });
+  const scores = (JSON.parse(readOutput(state.runId, "coverage.json") ?? "[]") as { score: number }[]).map((h) => h.score);
+  const stalled = replanStalled(scores);
+  if (score >= COVERAGE_THRESHOLD || stalled || state.planIterations >= MAX_PLAN_ITERATIONS) {
+    const reason = score >= COVERAGE_THRESHOLD
+      ? `coverage ${score} >= ${COVERAGE_THRESHOLD}`
+      : stalled
+        ? `coverage ${score} did not improve on the previous iteration (${scores[scores.length - 2]}); re-planning has converged, carrying ${gaps.length} gap(s) into the report instead of spending another plan call`
+        : `coverage ${score} < ${COVERAGE_THRESHOLD} but ${state.planIterations} iterations reached`;
+    deps.bus.decision({ node: "evaluate_coverage", reason, evidence: gaps, next: "generate", at: now() });
     return "generate";
   }
   deps.bus.decision({ node: "evaluate_coverage", reason: `coverage ${score} < ${COVERAGE_THRESHOLD}; re-planning`, evidence: gaps, next: "plan", at: now() });

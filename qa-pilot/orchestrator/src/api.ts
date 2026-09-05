@@ -14,7 +14,7 @@ import {
   startRun, newRunId, submitReview, awaitingReview, rerunTest, rerunBlocker, ReviewSubmissionSchema,
   contextLoginSteps as liveLoginSteps, needsLogin, rerunTests as runRerunTests, specPath,
 } from "./run.js";
-import { defaultStore } from "./store/index.js";
+import { defaultStore, storeChoice } from "./store/index.js";
 import type { ChatRecord, RerunPlanData, RunRecord, Store } from "./store/types.js";
 import { chatTurn, RunDraftSchema } from "./chat/turn.js";
 import { buildCatalogue } from "./copilot/catalogue.js";
@@ -154,15 +154,19 @@ export function createApi(opts: {
   }));
 
   // Unauthenticated: a reachability probe, so Atlas can be checked before a demo.
+  // `store` reports which backend actually answered, because the process falls back to the
+  // in-memory store when no connection string is configured, and a probe that said "mongo:
+  // up" either way would hide the fact that this run will not survive a restart.
   app.get("/health", async (c) => {
+    const { kind } = storeChoice();
     try {
       await store.findUserById("__health_probe__");
-      return c.json({ ok: true, mongo: "up" });
+      return c.json({ ok: true, store: kind, mongo: kind === "mongo" ? "up" : "n/a" });
     } catch (err) {
       // Deliberately generic: /health is unauthenticated, and a driver error carries the
       // cluster hostname or IP in its message. The detail goes to the server log instead.
       console.error("[health] store probe failed:", err);
-      return c.json({ ok: false, mongo: "down" }, 503);
+      return c.json({ ok: false, store: kind, mongo: kind === "mongo" ? "down" : "n/a" }, 503);
     }
   });
 

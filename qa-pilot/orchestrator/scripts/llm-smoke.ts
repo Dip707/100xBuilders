@@ -1,4 +1,6 @@
-import "dotenv/config";
+// Not "dotenv/config": that only reads process.cwd(), and this script runs with
+// orchestrator/ as cwd while .env lives at the qa-pilot root. env.ts loads both.
+import "../src/env.js";
 import { z } from "zod";
 import { AnthropicLlmClient } from "../src/llm/client.js";
 const c = new AnthropicLlmClient();

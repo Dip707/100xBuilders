@@ -1,0 +1,15 @@
+node_modules
+
+# Secrets. The provider key lives here and must never be committed.
+.env
+.env.local
+
+# Build and run artifacts, including leftovers from the archived
+# worktree-test-orchestration-agent branch that share this directory.
+/.next/
+/scripts/
+/generated-tests/
+/test-results/
+/.playwright-mcp/
+tsconfig.tsbuildinfo
+/qa-pilot-dashboard.png

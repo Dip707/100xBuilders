@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { BrowserToolkit } from "../browser/toolkit.js";
+import { BrowserToolkit, gotoWithRetry } from "../browser/toolkit.js";
 import { parseSnapshot } from "../browser/snapshot.js";
 import { outputDir, type Credentials, type FormInfo, type PageInfo, type RunState, type RunUpdate, type SiteMap, type Step } from "../state.js";
 import { BLOCKLIST, now, type NodeDeps } from "./deps.js";
@@ -211,6 +211,10 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
       landedPath = result.landedPath;
       opts.bus?.log("explorer", `logged in via ${loginPath}, landed on ${landedPath}`);
     } else opts.bus?.log("explorer", `login attempt at ${loginPath} did not leave the page`);
+  } else if (opts.credentials) {
+    // Credentials were supplied and never used. Silence here reads as a successful crawl of
+    // a tiny app, when in fact everything behind the sign-in was missed.
+    opts.bus?.log("explorer", `credentials were provided but no login form was found; crawling unauthenticated`);
   }
 
   const queue: { path: string; depth: number }[] = [{ path: "/", depth: 0 }];
@@ -239,14 +243,27 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
       opts.bus?.log("explorer", `extraction failed for ${path}: ${message}`);
       continue;
     }
-    // Only the landing page's own path is ever recorded (never an alias under the pre-redirect `path`),
-    // and only once - this keeps `pages` bounded to at most maxPages entries.
-    if (!(finalPath in pages)) pages[finalPath] = info;
+    // A landing page's content is only ever recorded under its own path, and only once, which
+    // keeps `pages` bounded to at most maxPages entries. The one exception is a visit that
+    // bounced to the login page. An anonymous crawl meets every gated route exactly this way,
+    // and the bounce is itself the gating signal - so the *requested* path is recorded as a
+    // gated route whose content is unknown, rather than discarded. Discarding it filed
+    // /checkout, /orders and /account under /login on a crawl run without credentials: the
+    // planner never saw them and the authz coverage check had nothing to score. The login
+    // page itself is still recorded when it is visited as itself (it is always queued).
+    const bouncedToLogin = finalPath !== path && loginPath !== null && finalPath === loginPath;
+    if (bouncedToLogin) {
+      if (!(path in pages)) pages[path] = { url: origin + path, path, title: "", forms: [], buttons: [], links: [], gated: true, snapshot: "" };
+    } else if (!(finalPath in pages)) pages[finalPath] = info;
     // The structured payload is what the Sources screen counts pages with; the message
     // stays human-readable for the feed. Never make the UI parse the sentence.
-    opts.bus?.log("explorer", `visited ${finalPath} (${info.forms.length} forms, ${info.buttons.length} buttons)`, {
-      visited: finalPath, forms: info.forms.length, buttons: info.buttons.length,
-    });
+    if (bouncedToLogin) {
+      opts.bus?.log("explorer", `visited ${path}: bounced to ${finalPath}, recorded as gated`, { visited: path, forms: 0, buttons: 0, gated: true });
+    } else {
+      opts.bus?.log("explorer", `visited ${finalPath} (${info.forms.length} forms, ${info.buttons.length} buttons)`, {
+        visited: finalPath, forms: info.forms.length, buttons: info.buttons.length,
+      });
+    }
     for (const p of filterLinks(info.links, origin)) {
       if (!seen.has(p)) queue.push({ path: p, depth: depth + 1 });
     }
@@ -261,7 +278,9 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   const anonPage = await anon.newPage();
   for (const path of Object.keys(pages)) {
     try {
-      await anonPage.goto(origin + path, { waitUntil: "domcontentloaded" });
+      // Retried, because the catch below reads a failure as "not gated" - a wrong answer
+      // rather than a missing one, which would silently drop this route's authz flows.
+      await gotoWithRetry(anonPage, origin + path);
       await settle(anonPage);
       const landed = pathOf(anonPage.url());
       const bounced = landed !== path && loginPath !== null && landed === loginPath;

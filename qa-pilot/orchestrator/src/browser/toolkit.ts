@@ -37,19 +37,107 @@ export function expectationCode(exp: Expectation, target: string = expectationTa
   }
 }
 
-/** How long to wait for an element. Short on purpose: "this locator does not resolve" is a
- *  verdict the planner, generator and healer all act on, and each of them pays this in full. */
-export const ELEMENT_TIMEOUT_MS = 5000;
-/** How long to wait for a page to load. A real target over a real network routinely needs more
- *  than the element timeout - a slow first paint used to fail the very first goto of a crawl and
- *  take the whole run down with it - so navigation gets its own, generous budget. */
-export const NAVIGATION_TIMEOUT_MS = 30_000;
+/**
+ * How long an *action* may take: resolving a locator, clicking, filling.
+ *
+ * Deliberately short, and deliberately not shared with navigation. The classifier depends
+ * on a click against a missing element failing fast with a locator error that names the
+ * step; raise this and Playwright waits out the whole test instead, reporting `timedOut`
+ * with no error location, which leaves the classifier and the healer nothing to work with.
+ */
+export function actionTimeoutMs(): number {
+  const raw = Number(process.env.QA_PILOT_ACTION_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+}
+
+/**
+ * How long a *navigation* may take.
+ *
+ * Much larger, because it answers a different question. Five seconds is generous against a
+ * target on localhost and too tight for a real site over the internet - saucedemo.com
+ * answers in 4.2-5.6s, straddling the old shared budget, so exploring it died on the very
+ * first `page.goto` before the crawl had begun. A slow site is not a broken one.
+ */
+export function navigationTimeoutMs(): number {
+  const raw = Number(process.env.QA_PILOT_NAV_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30000;
+}
+
+/** The same budgets as constants, for callers that read them once at import time. */
+export const ELEMENT_TIMEOUT_MS = actionTimeoutMs();
+export const NAVIGATION_TIMEOUT_MS = navigationTimeoutMs();
 /** How long a screenshot may take. It is decoration, so it gets less than an element. */
 export const SCREENSHOT_TIMEOUT_MS = 3000;
 
-function applyTimeouts(context: BrowserContext): void {
-  context.setDefaultTimeout(ELEMENT_TIMEOUT_MS);
-  context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+/** Navigations to retry: a timeout, a dropped connection, a DNS blip. Not a 404. */
+function isTransientNavError(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : String(err);
+  return /Timeout \d+ms exceeded|net::ERR_(CONNECTION|NETWORK|NAME_NOT_RESOLVED|TIMED_OUT|ABORTED|EMPTY_RESPONSE)/i.test(m);
+}
+
+/**
+ * Navigates, retrying a transient failure.
+ *
+ * A single slow response used to end the whole run: `page.goto` throws, the node's
+ * `guarded()` wrapper catches it, marks the run partial and jumps to the report. That is
+ * right for a broken node and wrong for a site having a bad moment - and against a target
+ * on localhost, where navigation never fails, the difference never showed up. Exploring a
+ * real site, it ended two runs before the crawl had produced anything.
+ *
+ * Attempts share the context's navigation timeout, so the ceiling is bounded by it.
+ */
+export async function gotoWithRetry(
+  page: { goto: (url: string, opts: { waitUntil: "domcontentloaded" }) => Promise<unknown> },
+  url: string,
+  opts: { attempts?: number; delayMs?: number; log?: (m: string) => void; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const attempts = opts.attempts ?? navRetryAttempts();
+  const delay = opts.delayMs ?? 1000;
+  const nap = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+      return;
+    } catch (err) {
+      if (!isTransientNavError(err) || i === attempts - 1) throw err;
+      opts.log?.(`navigation to ${url} failed (${(err as Error).message.split("\n")[0]}); retrying ${i + 2}/${attempts}`);
+      await nap(delay * (i + 1));
+    }
+  }
+}
+
+/** How many times a navigation is attempted before the node gives up. */
+export function navRetryAttempts(): number {
+  const raw = Number(process.env.QA_PILOT_NAV_RETRIES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 3;
+}
+
+/**
+ * How much accessibility snapshot a prompt may carry, in characters. 0 disables the cap.
+ *
+ * Deliberately tunable rather than fixed, because the right answer depends on the model. The
+ * evidence splits: compaction reliably helps small and mid-tier models, which lose the thread
+ * in a long observation, and can *hurt* frontier models with a large thinking budget, which do
+ * better with the raw tree. We run a flash-tier model by default, so the default caps.
+ *
+ * Truncation is on a line boundary and leaves an explicit marker: a model handed a silently
+ * cut-off tree will reasonably conclude the page ends there and report a missing element as a
+ * defect. Saying how much was dropped turns a wrong answer into a known-partial one.
+ */
+export const maxSnapshotChars = (): number => Number(process.env.QA_PILOT_MAX_SNAPSHOT_CHARS ?? 12000);
+
+export function budgetSnapshot(yaml: string, max = maxSnapshotChars()): string {
+  if (max <= 0 || yaml.length <= max) return yaml;
+  const lines = yaml.split("\n");
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > max) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  const dropped = lines.length - kept.length;
+  return `${kept.join("\n")}\n[snapshot truncated to ${max} characters; ${dropped} more element line(s) not shown]`;
 }
 
 export class BrowserToolkit {
@@ -96,7 +184,8 @@ export class BrowserToolkit {
     const headless = opts.headless ?? process.env.QA_PILOT_HEADLESS !== "0";
     const browser = await chromium.launch({ headless });
     const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-    applyTimeouts(context);
+    context.setDefaultTimeout(actionTimeoutMs());
+    context.setDefaultNavigationTimeout(navigationTimeoutMs());
     if (opts.screenshotDir) mkdirSync(opts.screenshotDir, { recursive: true });
     const cast = opts.runId && screencastEnabled() ? getScreencast(opts.runId) : undefined;
     return new BrowserToolkit(browser, context, opts.baseUrl.replace(/\/$/, ""), opts.bus, opts.agent ?? "browser", opts.screenshotDir, cast);
@@ -143,12 +232,13 @@ export class BrowserToolkit {
 
   async newContext(): Promise<BrowserContext> {
     const ctx = await this.browser.newContext({ viewport: { width: 1200, height: 800 } });
-    applyTimeouts(ctx);
+    ctx.setDefaultTimeout(actionTimeoutMs());
+    ctx.setDefaultNavigationTimeout(navigationTimeoutMs());
     return ctx;
   }
 
   async snapshot(page: Page): Promise<string> {
-    return page.locator("body").ariaSnapshot();
+    return budgetSnapshot(await page.locator("body").ariaSnapshot());
   }
 
   async screenshot(page: Page, label: string): Promise<string> {
@@ -176,7 +266,7 @@ export class BrowserToolkit {
     this.bus?.log(this.agent, `${step.action} ${step.role ?? ""} ${step.name ?? step.target ?? ""}`.trim());
     if (step.action === "goto") {
       const url = step.target?.startsWith("http") ? step.target : this.baseUrl + (step.target ?? "/");
-      await page.goto(url, { waitUntil: "domcontentloaded" });
+      await gotoWithRetry(page, url, { log: (m) => this.bus?.log(this.agent, m) });
       await this.screenshot(page, `goto ${step.target ?? ""}`);
       return { locator: page.locator("body"), code: "", strategy: "css" };
     }

@@ -13,6 +13,28 @@ let shop: Awaited<ReturnType<typeof startShop>>;
 beforeAll(async () => { shop = await startShop(); });
 afterAll(async () => { await shop.stop(); });
 
+describe("crawl without credentials", () => {
+  it("still records a route that bounces to the login page, and marks it gated", async () => {
+    // Without credentials the crawl is anonymous from the first request, so /orders bounces to
+    // /login while it is being discovered. That bounce IS the gating signal; discarding the
+    // requested path meant the site map had no /orders at all, the planner never saw it, and
+    // the authz coverage check had nothing to score.
+    const kit = await BrowserToolkit.launch({ headless: true, baseUrl: shop.base });
+    try {
+      const map = await crawl(kit, { maxPages: 30 });
+      expect(map.loginPath).toBe("/login");
+      for (const gatedPath of ["/orders", "/checkout", "/account"]) {
+        expect(map.pages[gatedPath], `${gatedPath} missing from site map`).toBeDefined();
+        expect(map.pages[gatedPath].gated, `${gatedPath} should be gated`).toBe(true);
+      }
+      expect(map.pages["/login"].gated).toBe(false);
+      expect(map.pages["/products"].gated).toBe(false);
+    } finally {
+      await kit.close();
+    }
+  }, 120_000);
+});
+
 describe("exploreNode", () => {
   it("crawls mini-shop, records forms, and detects gated routes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "qa-explore-")) + "/";

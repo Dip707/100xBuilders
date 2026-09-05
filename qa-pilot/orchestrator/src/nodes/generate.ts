@@ -8,8 +8,10 @@ import { writeOutput } from "../output.js";
 import { runPlaywright } from "./run.js";
 import { now, type NodeDeps } from "./deps.js";
 
-export const SelfRepairSchema = z.object({ source: z.string(), reason: z.string() });
-export const ExpectRepairSchema = z.object({ role: z.string(), name: z.string(), value: z.string().optional(), reason: z.string(), confidence: z.number().min(0).max(1) });
+// `reason` first: writing the whole patched file before saying why is the worst version of
+// the format tax - the decision is fully committed before any reasoning happens.
+export const SelfRepairSchema = z.object({ reason: z.string(), source: z.string() });
+export const ExpectRepairSchema = z.object({ reason: z.string(), role: z.string(), name: z.string(), value: z.string().optional(), confidence: z.number().min(0).max(1) });
 
 /** A URL fragment worth asserting: a real path or route, not the bare root that every URL contains. */
 const MEANINGFUL_URL_FRAGMENT = /^[A-Za-z0-9/._~%?=&#-]+$/;
