@@ -134,6 +134,19 @@ describe("createIssue", () => {
   });
 });
 
+describe("rejected project key", () => {
+  it("names COMPOSIO_API_KEY when Composio answers 401, however deep the SDK wraps it", async () => {
+    const inner = Object.assign(new Error('401 {"error":{"message":"Invalid API key: ak_**GuHM"}}'), { status: 401 });
+    const wrapped = Object.assign(new Error("Unable to retrieve tool"), { cause: inner });
+    const { sdk } = fakeSdk({ configs: [] });
+    sdk.authConfigs.list = async () => { throw wrapped; };
+    await expect(composioTrackerClient(sdk, {} as NodeJS.ProcessEnv).authConfigId("linear")).rejects.toThrow(/COMPOSIO_API_KEY/);
+    const executing = fakeSdk();
+    executing.sdk.tools.execute = async () => { throw inner; };
+    await expect(composioTrackerClient(executing.sdk, {} as NodeJS.ProcessEnv).listDestinations("u", "jira", "ca")).rejects.toBeInstanceOf(TrackerError);
+  });
+});
+
 describe("helpers", () => {
   it("findFirst walks arrays and objects depth-first", () => {
     expect(findFirst({ a: [{ b: 1 }, { c: { d: "hit", e: 2 } }] }, (o) => o.d === "hit")).toEqual({ d: "hit", e: 2 });

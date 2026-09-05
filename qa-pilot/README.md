@@ -77,7 +77,9 @@ A run's login is never stored, so after the API restarts a rerun of signed-in te
 *Ask copilot* on a run header opens a chat scoped to that run.
 
 When a rerun still fails and the pipeline's classifier called that failure an app defect, the row offers to file it.
-Connect Linear or Jira once under Settings (the user menu) and the row reads *Raise in Linear* or *Raise in Jira*; the ticket carries the repro steps, expected and actual, the classifier's evidence, the rerun error and a link back to the case, and the row turns into the issue's link.
+Connect Linear or Jira once under Settings (the user menu): the tab goes to the tracker's own sign-in through Composio and comes back, you pick the team or project when there is more than one, and the row reads *Raise in Linear* or *Raise in Jira*.
+The ticket carries the repro steps, expected and actual, the classifier's evidence, the rerun error and a link back to the case, and the row turns into the issue's link.
+qa-pilot never holds a tracker password or API key; Composio keeps the OAuth token and qa-pilot stores only the connected account's id.
 A failure the classifier called an environment error, a script bug or flaky is named as such and never invited to a ticket.
 
 ## Demo script (5 minutes)
@@ -105,8 +107,10 @@ A screenshot of the live UI during a fake-LLM run that stops at planning, showin
 | `QA_PILOT_SCREENCAST` | `1` | `0` turns off the live viewport stream on the run screen |
 | `QA_PILOT_API_PORT` | `4000` | API port |
 | `QA_PILOT_OUTPUT` | `qa-pilot/output/` | where run artifacts go |
-| `QA_PILOT_SECRET` | required to connect a tracker | encrypts Linear and Jira credentials at rest; any long random string |
-| `QA_PILOT_UI_ORIGIN` | `http://localhost:3000` | the UI's origin, allowed by CORS and used for the case link a filed ticket carries |
+| `COMPOSIO_API_KEY` | required to connect a tracker | Composio project key; Linear and Jira connect through Composio's OAuth |
+| `COMPOSIO_LINEAR_AUTH_CONFIG_ID`, `COMPOSIO_JIRA_AUTH_CONFIG_ID` | created on first use | reuse existing Composio auth configs instead of letting qa-pilot create managed ones |
+| `QA_PILOT_API_ORIGIN` | `http://localhost:4000` | where the browser reaches the API, for the OAuth callback |
+| `QA_PILOT_UI_ORIGIN` | `http://localhost:3000` | the UI's origin, allowed by CORS, returned to after OAuth, and used for the case link a filed ticket carries |
 
 ## Tests
 

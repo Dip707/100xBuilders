@@ -119,6 +119,36 @@ export function extractIssue(provider: TrackerProvider, data: unknown): { key: s
   return { key, url };
 }
 
+/**
+ * A 401 from Composio means the project key itself is wrong, which no retry fixes; it is
+ * named as such so the person looks at .env rather than at the tracker. The SDK wraps the
+ * HTTP error, so the status is read off the error and its cause.
+ */
+function rejectedKey(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  const walk = (v: unknown, depth: number): boolean => {
+    if (depth > 4 || v == null || typeof v !== "object" || seen.has(v)) return false;
+    seen.add(v);
+    const o = v as { status?: unknown; cause?: unknown; message?: unknown };
+    if (o.status === 401) return true;
+    if (typeof o.message === "string" && /invalid api key/i.test(o.message)) return true;
+    return walk(o.cause, depth + 1);
+  };
+  return walk(err, 0);
+}
+
+export const REJECTED_COMPOSIO_KEY = "Composio rejected the API key in COMPOSIO_API_KEY; check qa-pilot/.env";
+
+/** Runs an SDK call, turning a rejected project key into a TrackerError the route can show. */
+async function withKeyCheck<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (rejectedKey(err)) throw new TrackerError(REJECTED_COMPOSIO_KEY);
+    throw err;
+  }
+}
+
 /** Maps the SDK's wait outcome to a word: the SDK throws typed errors for failure and timeout. */
 function waitOutcome(err: unknown): "failed" | "timeout" {
   const name = (err as { name?: string } | null)?.name ?? "";
@@ -129,7 +159,7 @@ export function composioTrackerClient(sdk: ComposioSdk, env: NodeJS.ProcessEnv =
   const configIds = new Map<TrackerProvider, string>();
 
   async function execute(slug: string, userId: string, connectedAccountId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const res = await sdk.tools.execute(slug, { userId, connectedAccountId, arguments: args, dangerouslySkipVersionCheck: true });
+    const res = await withKeyCheck(() => sdk.tools.execute(slug, { userId, connectedAccountId, arguments: args, dangerouslySkipVersionCheck: true }));
     if (!res.successful) throw new TrackerError(res.error ? `${slug}: ${res.error}` : `${slug} did not succeed`);
     return res.data;
   }
@@ -141,17 +171,17 @@ export function composioTrackerClient(sdk: ComposioSdk, env: NodeJS.ProcessEnv =
       const fromEnv = env[`COMPOSIO_${provider.toUpperCase()}_AUTH_CONFIG_ID`];
       let id = fromEnv && fromEnv.trim();
       if (!id) {
-        const existing = await sdk.authConfigs.list({ toolkit: TOOLKIT[provider] });
+        const existing = await withKeyCheck(() => sdk.authConfigs.list({ toolkit: TOOLKIT[provider] }));
         id = existing.items.find((c) => c.toolkit.slug.toLowerCase() === TOOLKIT[provider])?.id;
       }
-      if (!id) id = (await sdk.authConfigs.create(TOOLKIT[provider], { type: "use_composio_managed_auth", name: `qa-pilot ${PROVIDER_NAME[provider]}` })).id;
+      if (!id) id = (await withKeyCheck(() => sdk.authConfigs.create(TOOLKIT[provider], { type: "use_composio_managed_auth", name: `qa-pilot ${PROVIDER_NAME[provider]}` }))).id;
       configIds.set(provider, id);
       return id;
     },
 
     async startConnection(userId, provider, callbackUrl) {
       const authConfigId = await this.authConfigId(provider);
-      const req = await sdk.connectedAccounts.link(userId, authConfigId, { callbackUrl, allowMultiple: true });
+      const req = await withKeyCheck(() => sdk.connectedAccounts.link(userId, authConfigId, { callbackUrl, allowMultiple: true }));
       if (!req.redirectUrl) throw new TrackerError(`Composio returned no authorisation link for ${PROVIDER_NAME[provider]}`);
       return { connectedAccountId: req.id, redirectUrl: req.redirectUrl };
     },
