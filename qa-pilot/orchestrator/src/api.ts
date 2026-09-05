@@ -22,7 +22,7 @@ import { resolveRun, FINISHED } from "./copilot/resolve.js";
 import { copilotTurn, validateSelection, type CopilotDecision } from "./copilot/turn.js";
 import { planRerun, resultData, summariseRerun } from "./copilot/execute.js";
 import { hydrateLoginSteps, readRedactedLoginSteps } from "./copilot/login-steps.js";
-import { makeLlmClient, type LlmClient } from "./llm/client.js";
+import { makeLlmClient, type LlmClient, baseUrl } from "./llm/client.js";
 import { authRoutes } from "./auth/routes.js";
 import { requireUser, type AuthEnv } from "./auth/middleware.js";
 import { artifactManifest } from "./runs/manifest.js";
@@ -878,5 +878,7 @@ if (process.argv[1] && process.argv[1].endsWith("api.ts")) {
       return { runId };
     },
   });
+  const provider = baseUrl() ? `proxy at ${baseUrl()}` : "Anthropic API directly";
+  console.log(`qa-pilot: LLM provider is ${provider}, model ${process.env.QA_PILOT_MODEL ?? "claude-opus-5"}`);
   serve({ fetch: app.fetch, port }, () => console.log(`qa-pilot api on http://localhost:${port}`));
 }

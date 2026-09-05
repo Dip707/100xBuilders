@@ -69,6 +69,36 @@ export const NAVIGATION_TIMEOUT_MS = navigationTimeoutMs();
 /** How long a screenshot may take. It is decoration, so it gets less than an element. */
 export const SCREENSHOT_TIMEOUT_MS = 3000;
 
+/** How long `settle` waits for a page to show real content before giving up on it. */
+export function settleTimeoutMs(): number {
+  const raw = Number(process.env.QA_PILOT_SETTLE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 6000;
+}
+
+/**
+ * Gives client-side rendering a moment to finish. `networkidle` alone is not a safe proxy for
+ * "the app has hydrated": a SPA that keeps a websocket, a poll, or a telemetry beacon running
+ * never goes quiet, so the wait burns its whole budget and returns having confirmed nothing -
+ * observed against a real target where a login form was still absent at domcontentloaded and
+ * only rendered a few seconds in, past a fixed cap, so extraction read an empty page and a
+ * correct login was read as "form not found". A click that submits a login or otherwise
+ * triggers a client-side redirect has the same problem one step later: the app may still be
+ * mid-navigation when the very next step fires, landing it on a route that has not
+ * authenticated yet - the two failures share one cause and one fix.
+ *
+ * Racing a concrete DOM signal - some interactive content actually attached - resolves the
+ * instant real content shows up, while the network-idle leg still wins fast on the common case
+ * of a page that genuinely settles. A page that renders nothing within the window is read as it
+ * is either way.
+ */
+export async function settle(page: Page): Promise<void> {
+  const timeout = settleTimeoutMs();
+  await Promise.race([
+    page.waitForLoadState("networkidle", { timeout }).catch(() => {}),
+    page.waitForSelector("form, input, button, a[href]", { timeout }).catch(() => {}),
+  ]);
+}
+
 /** Navigations to retry: a timeout, a dropped connection, a DNS blip. Not a 404. */
 function isTransientNavError(err: unknown): boolean {
   const m = err instanceof Error ? err.message : String(err);
@@ -293,7 +323,13 @@ export class BrowserToolkit {
           await r.locator.check();
           break;
       }
-      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      // click and press are the two actions that routinely trigger a client-side redirect
+      // (a submit, a nav link): domcontentloaded alone can resolve while the app is still
+      // mid-navigation, so the very next step fires against a page that has not finished
+      // authenticating or routing yet. fill/select/check don't carry that risk and keep the
+      // cheaper wait, so a plain form fill is never taxed for a problem it doesn't have.
+      if (step.action === "click" || step.action === "press") await settle(page);
+      else await page.waitForLoadState("domcontentloaded").catch(() => {});
       await this.screenshot(page, `${step.action} ${step.name ?? ""}`);
       return r;
     } catch (e) {

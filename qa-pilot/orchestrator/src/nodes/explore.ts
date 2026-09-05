@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { BrowserToolkit, gotoWithRetry } from "../browser/toolkit.js";
+import { BrowserToolkit, gotoWithRetry, settle } from "../browser/toolkit.js";
 import { parseSnapshot } from "../browser/snapshot.js";
 import { outputDir, type Credentials, type FormInfo, type PageInfo, type RunState, type RunUpdate, type SiteMap, type Step } from "../state.js";
 import { BLOCKLIST, now, type NodeDeps } from "./deps.js";
@@ -30,11 +30,6 @@ async function extractForms(page: Page, path: string): Promise<FormInfo[]> {
 export function pathOf(url: string): string {
   const u = new URL(url);
   return u.pathname + (u.hash.startsWith("#/") ? u.hash : "");
-}
-
-/** Gives client-side rendering a moment to finish; a page that never goes idle is read as it is. */
-async function settle(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
 }
 
 type Link = { href: string; text: string };
@@ -153,32 +148,66 @@ export function filterLinks(links: Link[], origin: string): string[] {
  *  login page's PageInfo (captured before credentials are filled, so it survives even if an authenticated
  *  visit later redirects away from the login path), and the route the login landed on - which is often
  *  the only door into the signed-in half of the app, since nothing links to it from outside. */
-async function tryLogin(
-  kit: BrowserToolkit,
-  page: Page,
-  loginPath: string,
-  origin: string,
-  creds: Credentials,
-): Promise<{ steps: Step[]; loginPage: PageInfo; landedPath: string } | null> {
+type LoginResult = { ok: true; steps: Step[]; loginPage: PageInfo; landedPath: string } | { ok: false; reason: string };
+
+async function tryLogin(kit: BrowserToolkit, page: Page, loginPath: string, origin: string, creds: Credentials): Promise<LoginResult> {
   await kit.act(page, { action: "goto", target: loginPath });
   const loginPage = await pageInfo(kit, page, origin);
   const form = loginPage.forms.find((f) => f.fields.some((x) => x.type === "password"));
-  if (!form) return null;
+  if (!form) return { ok: false, reason: "no password field found on the page" };
   const pw = form.fields.find((x) => x.type === "password")!;
   const user = form.fields.find((x) => x !== pw && x.role === "textbox");
-  if (!user || !form.submit) return null;
+  if (!user) return { ok: false, reason: "found a password field but no username field alongside it" };
+  if (!form.submit) return { ok: false, reason: "found username and password fields but no submit button" };
   const steps: Step[] = [
     { action: "goto", target: loginPath, intent: "open login page" },
     { action: "fill", role: "textbox", name: user.name, value: creds.username, intent: "enter username" },
     { action: "fill", role: "textbox", name: pw.name, value: creds.password, intent: "enter password" },
     { action: "click", role: "button", name: form.submit.name, value: undefined, intent: "submit login form" },
   ];
-  for (const s of steps.slice(1)) if (!(await kit.act(page, s))) return null;
-  await page.waitForLoadState("networkidle").catch(() => {});
+  for (const s of steps.slice(1)) if (!(await kit.act(page, s))) return { ok: false, reason: `step "${s.action} ${s.name}" could not be resolved on the page` };
+  // The submit click already settled inside kit.act, so credentials that took have had every
+  // chance to redirect by now; anything still showing a password field never left the login page.
   const landedPath = pathOf(page.url());
-  // Still on the login page, or shown it again: the credentials did not take.
-  if (landedPath === loginPath || (await hasPasswordField(page))) return null;
-  return { steps, loginPage, landedPath };
+  if (landedPath === loginPath || (await hasPasswordField(page))) return { ok: false, reason: "still on the login page (or shown it again) after submitting" };
+  return { ok: true, steps, loginPage, landedPath };
+}
+
+/** How many times a login is attempted before the crawl gives up and continues unauthenticated. */
+export function loginRetryAttempts(): number {
+  const raw = Number(process.env.QA_PILOT_LOGIN_RETRIES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 3;
+}
+
+/**
+ * Retries a login attempt with backoff before giving up on it.
+ *
+ * A single attempt conflates "these credentials are wrong" with "the app was slow, or had a
+ * one-off hiccup, and would have worked a moment later" - against a real target the same
+ * credentials that fail on attempt one can succeed cleanly on attempt two with no code change
+ * in between. Retrying is what turns a marginal timing budget into a reliability property
+ * instead of a coin flip, the same way `gotoWithRetry` already does for a single navigation.
+ */
+async function loginWithRetry(
+  kit: BrowserToolkit,
+  page: Page,
+  loginPath: string,
+  origin: string,
+  creds: Credentials,
+  opts: { attempts?: number; bus?: NodeDeps["bus"]; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<LoginResult> {
+  const attempts = opts.attempts ?? loginRetryAttempts();
+  const nap = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last: LoginResult = { ok: false, reason: "never attempted" };
+  for (let i = 0; i < attempts; i++) {
+    last = await tryLogin(kit, page, loginPath, origin, creds);
+    if (last.ok) return last;
+    if (i < attempts - 1) {
+      opts.bus?.log("explorer", `login attempt ${i + 1}/${attempts} at ${loginPath} failed (${last.reason}); retrying`);
+      await nap(1000 * (i + 1));
+    }
+  }
+  return last;
 }
 
 export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentials; maxPages?: number; maxDepth?: number; bus?: NodeDeps["bus"] }): Promise<SiteMap> {
@@ -204,13 +233,13 @@ export async function crawl(kit: BrowserToolkit, opts: { credentials?: Credentia
   const preLoginPaths = filterLinks(homeLinks, origin);
   let landedPath: string | null = null;
   if (loginPath && opts.credentials) {
-    const result = await tryLogin(kit, page, loginPath, origin, opts.credentials);
-    if (result) {
+    const result = await loginWithRetry(kit, page, loginPath, origin, opts.credentials, { bus: opts.bus });
+    if (result.ok) {
       loginSteps = result.steps;
       pages[loginPath] = result.loginPage;
       landedPath = result.landedPath;
       opts.bus?.log("explorer", `logged in via ${loginPath}, landed on ${landedPath}`);
-    } else opts.bus?.log("explorer", `login attempt at ${loginPath} did not leave the page`);
+    } else opts.bus?.log("explorer", `login at ${loginPath} did not succeed after ${loginRetryAttempts()} attempt(s): ${result.reason}`);
   } else if (opts.credentials) {
     // Credentials were supplied and never used. Silence here reads as a successful crawl of
     // a tiny app, when in fact everything behind the sign-in was missed.

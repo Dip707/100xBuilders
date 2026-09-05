@@ -9,17 +9,33 @@ const loginSteps: Step[] = JSON.parse(process.env.QA_PILOT_LOGIN_STEPS ?? "[]");
 /** Frames closer together than this are dropped: the viewer polls at 4 fps, so anything faster is wasted disk churn. */
 const FRAME_INTERVAL_MS = 200;
 
+/**
+ * Gives client-side rendering a moment to finish after a navigation or a click/press that may
+ * trigger one (a submit, a nav link). `networkidle` alone is not a safe proxy for "the app has
+ * hydrated": a SPA that keeps a websocket, a poll, or a telemetry beacon running never goes
+ * quiet, so an unbounded wait for it burns time confirming nothing. Racing it against a
+ * concrete DOM signal - some interactive content actually attached - resolves the instant real
+ * content shows up, while the network-idle leg still wins fast on a page that genuinely settles.
+ */
+async function settle(page: Page): Promise<void> {
+  await Promise.race([
+    page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {}),
+    page.waitForSelector("form, input, button, a[href]", { timeout: 6000 }).catch(() => {}),
+  ]);
+}
+
 async function runStep(page: Page, s: Step): Promise<void> {
   if (s.action === "goto") {
     await page.goto(s.target ?? "/", { waitUntil: "domcontentloaded" });
+    await settle(page);
     return;
   }
   const loc = page.getByRole(s.role as never, { name: s.name });
   switch (s.action) {
     case "fill": await loc.fill(s.value ?? ""); break;
-    case "click": await loc.click(); break;
+    case "click": await loc.click(); await settle(page); break;
     case "select": await loc.selectOption(s.value ?? ""); break;
-    case "press": await loc.press(s.value ?? "Enter"); break;
+    case "press": await loc.press(s.value ?? "Enter"); await settle(page); break;
     case "check": await loc.check(); break;
   }
 }
@@ -88,9 +104,9 @@ export const test = base.extend<{ login: () => Promise<void> }>({
     testInfo.annotations.push({ type: "pageerror", description: JSON.stringify(pageErrors) });
   },
   login: async ({ page }, use) => {
+    // The last login step is always the submit click, which already settles inside runStep.
     await use(async () => {
       for (const s of loginSteps) await runStep(page, s);
-      await page.waitForLoadState("networkidle").catch(() => {});
     });
   },
 });
