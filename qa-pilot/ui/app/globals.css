@@ -214,6 +214,61 @@
   animation: palette-in 130ms ease-out;
 }
 
+/*
+ * The planner's waiting state. Writing a plan is one long LLM call with nothing to report
+ * from inside it, so the screen has to carry a minute on its own: a beam that sweeps the
+ * panel it is working in, and a shimmer over the rows the flows will land in. Both are
+ * slow and low-contrast on purpose - this is a progress signal, not a spinner fighting for
+ * attention every second it is on screen.
+ */
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+@utility animate-sweep {
+  animation: sweep 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes shimmer {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@utility animate-shimmer {
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* The reading chips light up one after another, so the row reads as a pass over the crawl. */
+@keyframes chip-scan {
+  0%,
+  70%,
+  100% {
+    border-color: var(--color-line);
+    color: var(--color-body);
+    background-color: var(--color-surface);
+  }
+  20%,
+  40% {
+    border-color: var(--color-line-strong);
+    color: var(--color-fg);
+    background-color: var(--color-raised);
+  }
+}
+
+@utility animate-chip-scan {
+  animation: chip-scan 2.8s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

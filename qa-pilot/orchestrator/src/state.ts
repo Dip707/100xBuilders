@@ -188,13 +188,25 @@ export type Credentials = z.infer<typeof CredentialsSchema>;
 export const BudgetSchema = z.object({ maxLlmCalls: z.number().default(200), maxMinutes: z.number().default(40) });
 
 // ---------- Run input ----------
+
+/**
+ * How many flows the planner may write, unless a caller says otherwise.
+ *
+ * Small on purpose. Writing the plan is one LLM call whose cost scales with the number of
+ * flows it has to produce, and it is by far the longest stretch of a run: twelve flows took
+ * about a hundred seconds, nearly all of the wait before anything appears on screen. Three
+ * forces the planner to spend its budget on the areas that matter instead of padding the
+ * plan, and callers who want the whole app covered raise it explicitly.
+ */
+export const DEFAULT_MAX_FLOWS = 3;
+
 export const RunInputSchema = z.object({
   runId: z.string(),
   url: z.string().url(),
   credentials: CredentialsSchema.optional(),
   intent: z.string().optional(),
   prdText: z.string().optional(),
-  maxFlows: z.number().int().positive().default(12),
+  maxFlows: z.number().int().positive().default(DEFAULT_MAX_FLOWS),
   budget: BudgetSchema.default({ maxLlmCalls: 200, maxMinutes: 40 }),
   // When true the graph pauses after the coverage gate so the plan can be reviewed, edited
   // and trimmed before any test is generated. Off by default: the pipeline is autonomous.

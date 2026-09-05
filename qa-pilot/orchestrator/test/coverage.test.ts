@@ -127,6 +127,18 @@ describe("afterCoverage", () => {
     const state = { ...initialState({ runId: "r", url: "http://x" }), planIterations: MAX_PLAN_ITERATIONS, coverage: { score: 0.1, gaps: [], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} } as CoverageVerdict };
     expect(afterCoverage(state, { bus, llm: new FakeLlmClient({}), headless: true })).toBe("generate");
   });
+  it("returns generate when the plan is already at its flow limit, however low the score", () => {
+    const bus = new EventBus("r", mkdtempSync(join(tmpdir(), "qa-coverage-")) + "/r/");
+    // Every gap asks for a flow the plan has no room for, so another minute-long plan call
+    // would hand back the same three flows with a different set of gaps open.
+    const state = {
+      ...initialState({ runId: "r", url: "http://x", maxFlows: 2 }),
+      planIterations: 1,
+      plan: [mk("a-001", "happy", "Log in"), mk("b-001", "happy", "Check out")],
+      coverage: { score: 0.1, gaps: [{ kind: "missing_authz", target: "/orders", suggest: "add authz flow" }], untested_risk: [], checks: {}, prdRequirements: [], prdMatrix: {} } as CoverageVerdict,
+    };
+    expect(afterCoverage(state, { bus, llm: new FakeLlmClient({}), headless: true })).toBe("generate");
+  });
   it("returns plan and records a decision when score is below threshold and iterations remain", () => {
     const outDir = mkdtempSync(join(tmpdir(), "qa-coverage-")) + "/";
     const bus = new EventBus("r", outDir + "r/");

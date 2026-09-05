@@ -7,7 +7,7 @@ const ev = (e: Partial<RunEvent>): RunEvent => ({ type: "agent_log", runId: "run
 const log = (message: string, data?: unknown): RunEvent => ev({ agent: "planner", message, data });
 
 const started = [ev({ type: "node_start", node: "plan" })];
-const drafting = log("reading the site map: 2 pages, 1 form", { phase: "drafting", pages: 2, forms: 1, gaps: 0, iteration: 1, routes: ["/", "/cart"] });
+const drafting = log("reading the site map: 2 pages, 1 form", { phase: "drafting", pages: 2, forms: 1, gaps: 0, maxFlows: 3, iteration: 1, routes: ["/", "/cart"] });
 const drafted = log("LLM proposed 2 flows", {
   phase: "drafted",
   ids: ["auth-001", "cart-001"],
@@ -36,6 +36,7 @@ describe("plannerProgress", () => {
     expect(p.phase).toBe("drafting");
     expect(p.pages).toBe(2);
     expect(p.forms).toBe(1);
+    expect(p.maxFlows).toBe(3);
     expect(p.routes).toEqual(["/", "/cart"]);
     expect(p.flows).toEqual([]);
     expect(p.startedAt).toBe(at);

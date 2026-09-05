@@ -128,7 +128,7 @@ export async function planNode(state: RunState, deps: NodeDeps): Promise<RunUpda
     gaps
       ? `rewriting the plan to close ${gaps} coverage ${gaps === 1 ? "gap" : "gaps"}`
       : `reading the site map: ${pages.length} ${pages.length === 1 ? "page" : "pages"}, ${forms} ${forms === 1 ? "form" : "forms"}`,
-    { phase: "drafting", pages: pages.length, forms, gaps, iteration: state.planIterations + 1, routes: pages.map((p) => p.path) },
+    { phase: "drafting", pages: pages.length, forms, gaps, maxFlows: state.maxFlows, iteration: state.planIterations + 1, routes: pages.map((p) => p.path) },
   );
   const out = await deps.llm.complete({ prompt: "plan", input: buildPlanInput(state), schema: PlanOutputSchema, effort: "high" });
   llmCalls++;

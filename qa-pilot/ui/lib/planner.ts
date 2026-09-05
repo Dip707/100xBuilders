@@ -27,6 +27,8 @@ export type PlannerProgress = {
   gaps: number;
   pages: number;
   forms: number;
+  /** The flow budget this pass is writing to, so the waiting list can show the right number of rows. */
+  maxFlows: number;
   /** The routes the explorer found, named while the planner is still reading them. */
   routes: string[];
   flows: PlannerFlow[];
@@ -38,7 +40,7 @@ export type PlannerProgress = {
 
 type Payload = {
   phase?: string; flow?: string; title?: string; ok?: boolean; pages?: number; forms?: number;
-  gaps?: number; iteration?: number; routes?: unknown; flows?: unknown;
+  gaps?: number; maxFlows?: number; iteration?: number; routes?: unknown; flows?: unknown;
 };
 
 const payload = (e: RunEvent): Payload => (e.data ?? {}) as Payload;
@@ -75,7 +77,7 @@ export function plannerProgress(events: RunEvent[]): PlannerProgress | null {
 
   const p: PlannerProgress = {
     phase: "drafting", startedAt: events[start].at, iteration: 1, gaps: 0,
-    pages: 0, forms: 0, routes: [], flows: [], kept: 0, dropped: 0, action: null,
+    pages: 0, forms: 0, maxFlows: 0, routes: [], flows: [], kept: 0, dropped: 0, action: null,
   };
   const byId = new Map<string, PlannerFlow>();
 
@@ -88,6 +90,7 @@ export function plannerProgress(events: RunEvent[]): PlannerProgress | null {
         p.gaps = d.gaps ?? 0;
         p.pages = d.pages ?? 0;
         p.forms = d.forms ?? 0;
+        p.maxFlows = d.maxFlows ?? 0;
         p.routes = strings(d.routes);
         break;
       case "drafted":

@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { startRun, newRunId } from "./run.js";
 import { getBus } from "./events.js";
-import { outputDir, type RunInput } from "./state.js";
+import { DEFAULT_MAX_FLOWS, outputDir, type RunInput } from "./state.js";
 import { defaultStore } from "./store/index.js";
 import { ensureLocalUser } from "./auth/local-account.js";
 
@@ -22,7 +22,7 @@ const { positionals, values } = parseArgs({
 
 const [cmd, url] = positionals;
 if (cmd !== "run" || !url) {
-  console.error('usage: qa-pilot run <url> [--intent "..."] [--prd file.md] [--username u --password p] [--max-flows 12] [--headed]');
+  console.error('usage: qa-pilot run <url> [--intent "..."] [--prd file.md] [--username u --password p] [--max-flows 3] [--headed]');
   process.exit(1);
 }
 
@@ -49,7 +49,7 @@ try {
       intent: values.intent,
       prdText: values.prd ? readFileSync(values.prd, "utf8") : undefined,
       credentials: values.username && values.password ? { username: values.username, password: values.password } : undefined,
-      maxFlows: values["max-flows"] ? Number(values["max-flows"]) : 12,
+      maxFlows: values["max-flows"] ? Number(values["max-flows"]) : DEFAULT_MAX_FLOWS,
       // RunInputSchema fills maxLlmCalls/maxMinutes defaults at parse time; the
       // static RunInput type resolves those as required, so cast the empty input.
       budget: {} as RunInput["budget"],

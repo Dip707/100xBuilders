@@ -185,11 +185,24 @@ export async function coverageNode(state: RunState, deps: NodeDeps): Promise<Run
   return { coverage, llmCalls };
 }
 
+/**
+ * Whether a re-plan could close anything. Every open gap asks for a flow the plan does not
+ * have, so a plan already holding `maxFlows` flows has nowhere to put one: the planner would
+ * spend another minute-long call to hand back the same number of flows with a different set
+ * of gaps open. Below the cap it has room, and the gaps tell it what to fill it with.
+ */
+const hasRoomToReplan = (state: RunState) => state.plan.length < state.maxFlows;
+
 export function afterCoverage(state: RunState, deps: NodeDeps): "generate" | "plan" {
   const score = state.coverage!.score;
   const gaps = state.coverage!.gaps.map((g) => `${g.kind} ${g.target ?? g.requirement ?? ""}`.trim());
-  if (score >= COVERAGE_THRESHOLD || state.planIterations >= MAX_PLAN_ITERATIONS) {
-    deps.bus.decision({ node: "evaluate_coverage", reason: score >= COVERAGE_THRESHOLD ? `coverage ${score} >= ${COVERAGE_THRESHOLD}` : `coverage ${score} < ${COVERAGE_THRESHOLD} but ${state.planIterations} iterations reached`, evidence: gaps, next: "generate", at: now() });
+  const stop =
+    score >= COVERAGE_THRESHOLD ? `coverage ${score} >= ${COVERAGE_THRESHOLD}`
+    : state.planIterations >= MAX_PLAN_ITERATIONS ? `coverage ${score} < ${COVERAGE_THRESHOLD} but ${state.planIterations} iterations reached`
+    : !hasRoomToReplan(state) ? `coverage ${score} < ${COVERAGE_THRESHOLD} but the plan is already at its ${state.maxFlows}-flow limit, so a re-plan has no room to close a gap`
+    : null;
+  if (stop) {
+    deps.bus.decision({ node: "evaluate_coverage", reason: stop, evidence: gaps, next: "generate", at: now() });
     return "generate";
   }
   deps.bus.decision({ node: "evaluate_coverage", reason: `coverage ${score} < ${COVERAGE_THRESHOLD}; re-planning`, evidence: gaps, next: "plan", at: now() });

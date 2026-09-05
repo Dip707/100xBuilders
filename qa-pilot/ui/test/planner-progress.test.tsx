@@ -11,7 +11,7 @@ import type { PlannerProgress as Progress } from "@/lib/planner";
 
 const base: Progress = {
   phase: "drafting", startedAt: "2026-09-05T12:00:00.000Z", iteration: 1, gaps: 0,
-  pages: 5, forms: 2, routes: ["/", "/cart"], flows: [], kept: 0, dropped: 0, action: null,
+  pages: 5, forms: 2, maxFlows: 3, routes: ["/", "/cart"], flows: [], kept: 0, dropped: 0, action: null,
 };
 const render = (p: Partial<Progress> = {}, liveSrc: string | null = null) =>
   renderToStaticMarkup(<PlannerProgress progress={{ ...base, ...p }} liveSrc={liveSrc} />);
@@ -31,6 +31,20 @@ describe("PlannerProgress, while the model is drafting", () => {
 
   it("promises the flows rather than claiming there are none", () => {
     expect(render()).toContain("The flows appear here the moment the planner has written them.");
+  });
+
+  it("says how long the wait is for rather than sitting still", () => {
+    // The panel is on screen for the length of one LLM call, so the wait has to move and
+    // has to name the budget it is waiting on - a static list read as a hung screen.
+    const html = render();
+    expect(html).toContain("Writing up to 3 flows");
+    expect(html).toContain("animate-sweep");
+    expect(html).toContain("animate-shimmer");
+  });
+
+  it("holds one waiting row per flow the planner may write, so the list does not reflow", () => {
+    expect(render({ maxFlows: 2 }).match(/animate-shimmer/g)!.length).toBe(2 * 3);
+    expect(render({ maxFlows: 5 }).match(/animate-shimmer/g)!.length).toBe(5 * 3);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { FlowSchema, ClassificationSchema, initialState } from "../src/state.js";
+import { FlowSchema, ClassificationSchema, initialState, DEFAULT_MAX_FLOWS } from "../src/state.js";
 
 describe("state schemas", () => {
   it("accepts the PRD example flow", () => {
@@ -41,7 +41,7 @@ describe("state schemas", () => {
 
   it("builds an initial state with defaults", () => {
     const s = initialState({ runId: "r1", url: "http://localhost:3005" });
-    expect(s.maxFlows).toBe(12);
+    expect(s.maxFlows).toBe(DEFAULT_MAX_FLOWS);
     expect(s.budget).toEqual({ maxLlmCalls: 200, maxMinutes: 40 });
     expect(s.planIterations).toBe(0);
     expect(s.partial).toBe(false);
