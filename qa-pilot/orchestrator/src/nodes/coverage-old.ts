@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CoverageVerdict, Flow, FormInfo, RunState, RunUpdate, SiteMap } from "../state.js";
+import type { CoverageVerdict, Flow, RunState, RunUpdate, SiteMap } from "../state.js";
 import { readOutput, writeOutput } from "../output.js";
 import { now, type NodeDeps } from "./deps.js";
 
@@ -22,19 +22,6 @@ const INTENT_FILLER = new Set(["focus", "with", "and", "the", "on", "cover", "co
 /** An empty-submit flow says so in its title, as the planner prompt requires. "Missing" and
  *  "required" are not enough: "rejects checkout when the postal code is missing" leaves one
  *  field out and is the form's negative case, not its empty case. */
-/** Field types carrying a format the user can get wrong. A bare text box has no wrong answer. */
-const CONSTRAINED_TYPES = new Set(["email", "password", "number", "tel", "url", "date"]);
-/** A form is worth a negative case only if some field can hold something invalid. A lone
- *  optional text box - a coupon code, a search term - cannot be filled in wrongly, and
- *  demanding a negative case for it asks the planner for a test that cannot be written. */
-const canBeInvalid = (form: FormInfo) => form.fields.some((f) => f.required || CONSTRAINED_TYPES.has(f.type));
-/** A form is worth an empty-submit case only if it requires something. Submitting a form whose
- *  fields are all optional succeeds; there is no validation for the test to assert on. */
-const canBeEmpty = (form: FormInfo) => form.fields.some((f) => f.required);
-/** The same fields under the same button are the same form wherever it appears. */
-const formSignature = (form: FormInfo) =>
-  JSON.stringify([form.submit?.name ?? "", form.fields.map((f) => `${f.name}|${f.type}|${f.required}`).sort()]);
-
 const isEmptySubmit = (f: Flow) => /\bempty\b|\bblank\b|no input|without (any |entering |filling )?(input|data|values|fields)|nothing (entered|filled|typed)/i.test(f.title);
 
 export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: string; prdRequirements?: string[]; prdMatrix?: Record<string, string[]> }): CoverageVerdict {
@@ -42,32 +29,21 @@ export function scoreCoverage(siteMap: SiteMap, flows: Flow[], opts: { intent?: 
   const checks: Record<string, number> = {};
   const weights: Record<string, number> = {};
 
-  // 1. forms: happy, plus a negative and an empty-submit case where the form admits one.
-  // Forms are grouped by shape first: product pages p1, p2 and p3 each carry the same
-  // add-to-cart form, and a flow that adds p2 exercises the same handler as one that adds
-  // p1. Counting them separately tripled every gap that form had, so an app that merely
-  // lists more than one product scored lower than the same app listing one.
-  const groups = new Map<string, { paths: string[]; form: FormInfo }>();
-  for (const page of Object.values(siteMap.pages))
-    for (const form of page.forms) {
-      const group = groups.get(formSignature(form));
-      if (group) group.paths.push(page.path);
-      else groups.set(formSignature(form), { paths: [page.path], form });
-    }
-  if (groups.size) {
+  // 1. forms: happy + negative + empty submit
+  const forms = Object.values(siteMap.pages).flatMap((p) => p.forms.map((f) => ({ path: p.path, id: f.id })));
+  if (forms.length) {
     let pass = 0;
-    for (const { paths, form } of groups.values()) {
-      const on = flows.filter((f) => paths.some((path) => touches(f, path)));
-      const at = paths[0];
-      const cases: { ok: boolean; kind: Gap["kind"]; suggest: string }[] = [
-        { ok: on.some((f) => f.category === "happy"), kind: "missing_happy", suggest: `submit ${at} form with valid data and verify success` },
-      ];
-      if (canBeInvalid(form)) cases.push({ ok: on.some((f) => f.category === "negative" && !isEmptySubmit(f)), kind: "missing_negative", suggest: `submit ${at} form with invalid data and verify the error` });
-      if (canBeEmpty(form)) cases.push({ ok: on.some((f) => isEmptySubmit(f)), kind: "missing_empty_submit", suggest: `submit ${at} form empty and verify validation` });
-      for (const c of cases) if (!c.ok) gaps.push({ kind: c.kind, target: `form:${at}`, suggest: c.suggest });
-      pass += cases.filter((c) => c.ok).length / cases.length;
+    for (const form of forms) {
+      const on = flows.filter((f) => touches(f, form.path));
+      const happy = on.some((f) => f.category === "happy");
+      const negative = on.some((f) => f.category === "negative" && !isEmptySubmit(f));
+      const empty = on.some((f) => isEmptySubmit(f));
+      if (!happy) gaps.push({ kind: "missing_happy", target: `form:${form.path}`, suggest: `submit ${form.path} form with valid data and verify success` });
+      if (!negative) gaps.push({ kind: "missing_negative", target: `form:${form.path}`, suggest: `submit ${form.path} form with invalid data and verify the error` });
+      if (!empty) gaps.push({ kind: "missing_empty_submit", target: `form:${form.path}`, suggest: `submit ${form.path} form empty and verify validation` });
+      pass += [happy, negative, empty].filter(Boolean).length / 3;
     }
-    checks.forms = pass / groups.size;
+    checks.forms = pass / forms.length;
     weights.forms = 0.2;
   }
 

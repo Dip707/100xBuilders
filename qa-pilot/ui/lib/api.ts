@@ -216,6 +216,10 @@ export const createCopilotChat = (scope: ChatScope) =>
 
 export const listCopilotChats = () => apiFetch<{ chats: ChatSummary[] }>("/copilot/chats").then((r) => r.chats);
 
+/** Repoints an existing chat at another run; `null` clears the pin back to the most recent finished run. */
+export const setCopilotScope = (id: string, runId: string | null) =>
+  apiFetch<{ scope: ChatScope }>(`/copilot/chats/${encodeURIComponent(id)}/scope`, { method: "POST", body: JSON.stringify({ runId }) }).then((r) => r.scope);
+
 /** One copilot turn: the decision, not the execution. */
 export const sendCopilotMessage = (id: string, text: string) =>
   apiFetch<CopilotTurn>(`/copilot/chats/${encodeURIComponent(id)}/messages`, { method: "POST", body: JSON.stringify({ text }) });

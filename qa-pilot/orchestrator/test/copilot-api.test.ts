@@ -66,6 +66,8 @@ const send = (app: ReturnType<typeof api>, id: string, text: string) =>
   app.request(`${ORIGIN}/copilot/chats/${id}/messages`, { method: "POST", headers, body: JSON.stringify({ text }) });
 const execute = (app: ReturnType<typeof api>, id: string, body: Record<string, unknown> = {}) =>
   app.request(`${ORIGIN}/copilot/chats/${id}/execute`, { method: "POST", headers, body: JSON.stringify(body) });
+const scope = (app: ReturnType<typeof api>, id: string, runId: string | null) =>
+  app.request(`${ORIGIN}/copilot/chats/${id}/scope`, { method: "POST", headers, body: JSON.stringify({ runId }) });
 
 const RERUN = { reply: "Rerunning the failed checkout tests.", action: "rerun", testIds: ["checkout-001", "checkout-002"], title: "Rerun failed checkout tests" };
 
@@ -82,7 +84,7 @@ beforeEach(async () => {
 describe("copilot chats", () => {
   it("requires a session", async () => {
     const app = api(RERUN);
-    for (const [method, path] of [["GET", "/copilot/chats"], ["POST", "/copilot/chats"], ["POST", "/copilot/chats/x/messages"], ["POST", "/copilot/chats/x/execute"]] as const) {
+    for (const [method, path] of [["GET", "/copilot/chats"], ["POST", "/copilot/chats"], ["POST", "/copilot/chats/x/messages"], ["POST", "/copilot/chats/x/execute"], ["POST", "/copilot/chats/x/scope"]] as const) {
       const res = await app.request(`${ORIGIN}${path}`, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
       expect(res.status, `${method} ${path}`).toBe(401);
     }
@@ -104,6 +106,51 @@ describe("copilot chats", () => {
     await store.insertRun(run("theirs", { userId: "someone-else" }));
     const res = await app.request(`${ORIGIN}/copilot/chats`, { method: "POST", headers, body: JSON.stringify({ runId: "theirs" }) });
     expect(res.status).toBe(404);
+  });
+
+  it("repoints a chat at another run, and clears the pin when given null", async () => {
+    const app = api(RERUN);
+    await store.insertRun(run("shop-2", { url: "http://localhost:3006" }));
+    const chat = await newChat(app, { runId: "shop-1" });
+
+    const res = await scope(app, chat.id, "shop-2");
+    expect(res.status).toBe(200);
+    expect((await res.json()).scope).toEqual({ runId: "shop-2", url: "http://localhost:3006" });
+    expect((await store.getChat(chat.id))!.scope).toEqual({ runId: "shop-2", url: "http://localhost:3006" });
+
+    expect((await scope(app, chat.id, null)).status).toBe(200);
+    expect((await store.getChat(chat.id))!.scope).toEqual({});
+  });
+
+  it("drops a rerun decided for the run being left, so it cannot fire against another", async () => {
+    const app = api(RERUN, { context: [] });
+    await store.insertRun(run("shop-2", { url: "http://localhost:3006" }));
+    const chat = await newChat(app, { runId: "shop-1" });
+    await send(app, chat.id, "rerun the failed checkout tests");
+    expect((await store.getChat(chat.id))!.pending).toEqual({ runId: "shop-1", testIds: ["checkout-001", "checkout-002"] });
+
+    await scope(app, chat.id, "shop-2");
+    expect((await store.getChat(chat.id))!.pending).toBeUndefined();
+    expect((await execute(app, chat.id)).status).toBe(409);
+  });
+
+  it("keeps a pending rerun when the chat is repointed at the run it is already for", async () => {
+    const app = api(RERUN, { context: [] });
+    const chat = await newChat(app);
+    await send(app, chat.id, "rerun the failed checkout tests");
+    await scope(app, chat.id, "shop-1");
+    expect((await store.getChat(chat.id))!.pending).toEqual({ runId: "shop-1", testIds: ["checkout-001", "checkout-002"] });
+  });
+
+  it("refuses repointing at a run the caller does not own, or an intake chat", async () => {
+    const app = api(RERUN);
+    await store.insertRun(run("theirs", { userId: "someone-else" }));
+    const chat = await newChat(app);
+    expect((await scope(app, chat.id, "theirs")).status).toBe(404);
+    expect((await store.getChat(chat.id))!.scope).toEqual({});
+
+    const intake = (await (await app.request(`${ORIGIN}/chats`, { method: "POST", headers })).json()).chat as { id: string };
+    expect((await scope(app, intake.id, "shop-1")).status).toBe(404);
   });
 });
 

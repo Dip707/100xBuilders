@@ -1,5 +1,22 @@
-import type { ChatMessage, RerunPlanData } from "./api";
+import type { ChatMessage, RerunPlanData, RunRecord, RunStatus } from "./api";
 import type { RunEvent } from "./events";
+import { hostOf, relativeTime } from "./format";
+
+/**
+ * Statuses the copilot can act on, matching the server's own set. A run still going or parked
+ * at the review gate has no results to reason about, so the run picker never offers one.
+ */
+const FINISHED: ReadonlySet<RunStatus> = new Set<RunStatus>(["done", "partial", "failed", "interrupted"]);
+
+/** The runs a chat may be pointed at, in the order the API returned them - newest first. */
+export function selectableRuns(runs: RunRecord[]): RunRecord[] {
+  return runs.filter((r) => FINISHED.has(r.status));
+}
+
+/** How a run reads in the picker: the app it tested, then when it ran. */
+export function runLabel(run: RunRecord): string {
+  return `${hostOf(run.url)} · ${relativeTime(run.startedAt)}`;
+}
 
 export type LiveStatus = "queued" | "running" | "passed" | "failed";
 

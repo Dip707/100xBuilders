@@ -269,3 +269,26 @@ describe("scoreCoverage credits the routes a flow really reaches", () => {
     expect(words).not.toContain("end");
   });
 });
+
+describe("scoreCoverage form applicability", () => {
+  /** The add-to-cart form on mini-shop's product pages: one optional quantity box. */
+  const cartAdd = (path: string) => ({
+    url: `http://x${path}`, path, title: "Product", gated: false, snapshot: "", buttons: [], links: [],
+    forms: [{ id: `${path}#0`, submit: { role: "button", name: "Add to cart" }, fields: [{ role: "spinbutton", name: "Quantity", type: "number", required: false }] }],
+  });
+  const shop = (paths: string[]): SiteMap => ({
+    origin: "http://x", loginPath: null, loginSteps: [],
+    pages: Object.fromEntries(paths.map((p) => [p, cartAdd(p)])),
+  });
+
+  it("asks for no empty-submit case on a form that requires nothing", () => {
+    const v = scoreCoverage(shop(["/products/p1"]), [mk("c1", "happy", "Add to cart", "/products/p1")], {});
+    expect(v.gaps.map((g) => g.kind)).not.toContain("missing_empty_submit");
+  });
+
+  it("counts one form shared across product pages once, and any page covers it", () => {
+    const v = scoreCoverage(shop(["/products/p1", "/products/p2", "/products/p3"]), [mk("c1", "happy", "Add to cart", "/products/p2")], {});
+    expect(v.gaps.filter((g) => g.kind === "missing_happy")).toHaveLength(0);
+    expect(v.gaps.filter((g) => g.kind === "missing_negative")).toHaveLength(1);
+  });
+});

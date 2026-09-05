@@ -22,7 +22,7 @@ beforeAll(async () => {
 afterAll(async () => { await shop.stop(); });
 beforeEach(() => { runPlaywrightMock.mockReset(); });
 
-// The planner named the heading wrong: the live page says "Log in".
+// The planner named the heading wrong: the live page says "Welcome back".
 const flow: Flow = {
   id: "auth-heading-001", title: "Login page shows its heading", category: "happy", priority: "P2", preconditions: ["logged_out"], source: "explored",
   steps: [{ action: "goto", target: "/login", intent: "open the login page" }],
@@ -41,10 +41,10 @@ describe("generateFlowNode expectation repair", () => {
   it("re-targets an expectation that is false live to the element the LLM picks, once verified", async () => {
     const { bus, state } = fresh("qa-exp-repair-a-");
     runPlaywrightMock.mockResolvedValueOnce(passed());
-    const llm = new FakeLlmClient({ "expect-repair": { role: "heading", name: "Log in", reason: "the login page heading is titled Log in", confidence: 0.9 } });
+    const llm = new FakeLlmClient({ "expect-repair": { role: "heading", name: "Welcome back", reason: "the login page heading reads Welcome back", confidence: 0.9 } });
     const update = await generateFlowNode(state, { bus, llm, headless: true });
     const src = readFileSync((update.testFiles as string[])[0], "utf8");
-    expect(src).toContain("await expect(page.getByRole('heading', { name: 'Log in' })).toBeVisible();");
+    expect(src).toContain("await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();");
     expect(src).not.toContain("Sign in to your account");
     expect(update.llmCalls).toBe(state.llmCalls + 1);
     expect(bus.replay().some((e) => e.type === "decision" && String(e.message).includes("re-targeted expectation"))).toBe(true);
