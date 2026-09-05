@@ -118,7 +118,7 @@ export function IntegrationsCard({
   return (
     <Card title="Integrations">
       <p className="py-4 text-[13px] leading-relaxed text-muted">
-        Connect a tracker and the copilot can file a ticket for any failure the classifier called an app defect. Connecting opens the tracker&apos;s own sign-in and brings you back here; qa-pilot never sees a password or an API key.
+        Connect a tracker and the copilot can file a ticket for any failure the classifier called an app defect. Connecting opens the tracker&apos;s own sign-in and brings you back here; AEGIS never sees a password or an API key.
       </p>
       {integration?.status === "pending" && (
         <p className="pb-4 text-[13px] text-muted">The last attempt to connect {PROVIDER_NAME[integration.provider]} did not finish. Try again.</p>

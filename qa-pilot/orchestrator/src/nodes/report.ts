@@ -30,7 +30,7 @@ export function renderReport(state: RunState): string {
   const passed = tests.filter((t) => t.status === "passed").length;
   const cls = new Map(state.classifications.map((c) => [c.test, c]));
   const md: string[] = [];
-  md.push(`# qa-pilot report for ${text(state.url)}`, "", `Run ${text(state.runId)}${state.partial ? ` (partial: ${text(state.partialReason ?? "unknown reason")})` : ""}.`, "");
+  md.push(`# AEGIS report for ${text(state.url)}`, "", `Run ${text(state.runId)}${state.partial ? ` (partial: ${text(state.partialReason ?? "unknown reason")})` : ""}.`, "");
   md.push("## Summary", "", row(["Flows planned", "Tests generated", "Passed", "Failed", "Heals", "Defects", "Coverage", "LLM calls"]), row(["---", "---", "---", "---", "---", "---", "---", "---"]),
     row([state.plan.length, tests.length, passed, tests.length - passed, state.healLog.filter((h) => h.accepted).length, state.defects.length, state.coverage?.score ?? "n/a", state.llmCalls]), "");
   md.push("## Flows by category", "");
@@ -247,14 +247,14 @@ function renderReportHtml(state: RunState): string {
   for (const f of state.plan) cats.set(f.category, (cats.get(f.category) ?? 0) + 1);
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>qa-pilot report - ${escAttr(state.url)}</title>
+<title>AEGIS report - ${escAttr(state.url)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${REPORT_CSS}</style></head>
 <body>
 <header class="report-header"><div class="report-header-inner">
 <div>
-<div class="brand"><span class="brand-mark">${LOGO_SVG}</span>qa-pilot</div>
+<div class="brand"><span class="brand-mark">${LOGO_SVG}</span>AEGIS</div>
 <h1 class="run-title">${text(state.url)}</h1>
 <div class="run-sub">run ${text(state.runId)}</div>
 </div>

@@ -76,7 +76,7 @@ export default function OverviewPage() {
             <EmptyState
               icon="flask"
               title="No runs yet"
-              body="Point qa-pilot at a URL and it explores the app, plans tests, generates them, runs them, and repairs what breaks."
+              body="Point AEGIS at a URL and it explores the app, plans tests, generates them, runs them, and repairs what breaks."
               action={<Link href="/runs/new"><Button><Icon name="plus" size={14} /> Start your first run</Button></Link>}
             />
           ) : (

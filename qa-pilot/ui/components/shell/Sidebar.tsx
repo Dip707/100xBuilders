@@ -77,7 +77,7 @@ export function Sidebar() {
 
   return (
     <aside className="flex w-[248px] shrink-0 flex-col border-r border-line bg-app">
-      <Link href="/" className="flex items-center px-4 pb-3 pt-4" aria-label="qa-pilot home">
+      <Link href="/" className="flex items-center px-4 pb-3 pt-4" aria-label="AEGIS home">
         <LogoLockup />
       </Link>
 

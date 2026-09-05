@@ -30,7 +30,7 @@ export const STAGE_ORDER = ["sources", "coverage", "cases", "runs"] as const;
 const DEFINITIONS: Record<StageId, Omit<Stage, "status">> = {
   sources: {
     id: "sources", label: "Sources", icon: "compass", nodes: ["explore"],
-    blurb: "qa-pilot browses the app to learn its pages, forms and gated routes.",
+    blurb: "AEGIS browses the app to learn its pages, forms and gated routes.",
   },
   coverage: {
     id: "coverage", label: "Test coverage", icon: "target", nodes: ["plan", "evaluate_coverage", "review"],

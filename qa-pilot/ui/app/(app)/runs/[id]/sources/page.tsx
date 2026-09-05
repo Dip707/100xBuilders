@@ -69,7 +69,7 @@ export default function SourcesPage() {
       <Wallpaper name="drift" />
       <PageHeader
         crumbs={crumbs} title="Sources"
-        subtitle="What qa-pilot read to understand your product. Everything the planner writes is derived from this crawl."
+        subtitle="What AEGIS read to understand your product. Everything the planner writes is derived from this crawl."
       />
       <RunHeader run={run} />
 
@@ -77,7 +77,7 @@ export default function SourcesPage() {
         <section className="rounded-card border border-line bg-surface p-4">
           <h2 className="flex items-center gap-2 text-[14px] font-medium tracking-[0.2px] text-fg">
             <Icon name="compass" size={15} className="text-muted" />
-            {exploring ? "qa-pilot is exploring your app" : "Exploration complete"}
+            {exploring ? "AEGIS is exploring your app" : "Exploration complete"}
           </h2>
           <p className="mt-1 text-[13px] leading-relaxed text-muted">
             {exploring ? (

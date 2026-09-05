@@ -13,11 +13,11 @@ function Stat({ dot, label, value }: { dot: string; label: string; value: number
 }
 
 const STAGE: Record<string, string> = {
-  explore: "qa-pilot is exploring the app to map its pages, forms and gated routes.",
+  explore: "AEGIS is exploring the app to map its pages, forms and gated routes.",
   plan: "The planner is writing flows and dry-walking each one against the live app.",
   evaluate_coverage: "The evaluator is scoring the plan for gaps before generation.",
   generate: "The generator is turning flows into Playwright tests, validating every selector live.",
-  run: "Your tests are running. qa-pilot is clicking through the app scenarios now; the list below updates live.",
+  run: "Your tests are running. AEGIS is clicking through the app scenarios now; the list below updates live.",
   classify: "The classifier is separating broken tests from genuine defects.",
   heal: "The healer is repairing broken locators and re-running the patched tests.",
   report: "Writing the final report.",

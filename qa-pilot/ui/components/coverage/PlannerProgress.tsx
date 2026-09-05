@@ -124,7 +124,7 @@ export function PlannerProgress({ progress, liveSrc }: { progress: Progress; liv
     <section className="rounded-card border border-line bg-surface p-4">
       <h2 className="flex items-center gap-2 text-[14px] font-medium tracking-[0.2px] text-fg">
         <Icon name="target" size={15} className="text-muted" />
-        {drafting ? "qa-pilot is writing your test plan" : "qa-pilot is validating the plan on your app"}
+        {drafting ? "AEGIS is writing your test plan" : "AEGIS is validating the plan on your app"}
         <span className="ml-auto font-mono text-[12px] font-normal text-muted">{elapsed}</span>
       </h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted">

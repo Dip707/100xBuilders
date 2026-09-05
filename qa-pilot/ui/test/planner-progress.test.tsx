@@ -19,7 +19,7 @@ const render = (p: Partial<Progress> = {}, liveSrc: string | null = null) =>
 describe("PlannerProgress, while the model is drafting", () => {
   it("names what the planner is reading rather than showing an empty browser", () => {
     const html = render();
-    expect(html).toContain("qa-pilot is writing your test plan");
+    expect(html).toContain("AEGIS is writing your test plan");
     expect(html).toContain("5 pages");
     expect(html).toContain("/cart");
     expect(html).not.toContain("Live view of the planner");
